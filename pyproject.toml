@@ -1,0 +1,9 @@
+[project]
+name = "lucera-metrics"
+version = "0.1.0"
+description = "API de métricas (read-only) para el dashboard del cliente Lucera"
+requires-python = ">=3.11"
+dependencies = ["fastapi>=0.115", "uvicorn[standard]>=0.30", "pymysql>=1.1.1"]
+
+[tool.uv]
+package = false

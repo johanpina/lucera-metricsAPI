@@ -1,0 +1,10 @@
+.venv/
+__pycache__/
+*.pyc
+.env
+.env.*
+!.env.example
+cloudrun.env.yaml
+secrets/
+*.pem
+*.log
