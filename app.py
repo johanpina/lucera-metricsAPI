@@ -14,11 +14,13 @@ import os
 import time
 from datetime import date, datetime
 from decimal import Decimal
+from pathlib import Path
 
 import jwt
 import pymysql
 from fastapi import Depends, FastAPI, Header, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import HTMLResponse
 from pydantic import BaseModel
 
 # ── Conexión a Aiven (read-only) ─────────────────────────────────────────────
@@ -208,6 +210,23 @@ def health():
         return {"ok": True}
     except Exception as e:  # noqa: BLE001
         raise HTTPException(status_code=503, detail=f"db: {e}")
+
+
+# ── Documentación (sirve docs/index.html en la raíz) ─────────────────────────
+try:
+    _DOCS = (Path(__file__).parent / "docs" / "index.html").read_text(encoding="utf-8")
+except Exception:  # noqa: BLE001
+    _DOCS = "<h1>Lucera Metrics API</h1><p>Ver <a href='/docs'>/docs</a>.</p>"
+
+
+@app.get("/", response_class=HTMLResponse, include_in_schema=False)
+def home() -> str:
+    return (
+        '<!doctype html><html lang="es"><head><meta charset="utf-8">'
+        '<meta name="viewport" content="width=device-width,initial-scale=1">'
+        "<title>Lucera Metrics API</title></head>"
+        f"<body>{_DOCS}</body></html>"
+    )
 
 
 # ── Acudientes (guardians + users + hijos) ───────────────────────────────────

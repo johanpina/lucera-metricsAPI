@@ -1,0 +1,502 @@
+<title>Lucera Metrics API</title>
+<style>
+  :root{
+    --teal:#009485; --teal-dark:#00786b; --teal-ink:#ffffff;
+    --bg:#ffffff; --side:#fafbfc; --ink:#1c2126; --muted:#5c6b74; --link:#00857a;
+    --line:#e6eaed; --code-bg:#f4f6f7; --code-ink:#263238; --inline:#e5484d;
+    --note:#2196f3; --warn:#ff9800; --tip:#00bfa5;
+    --get:#0f9d58; --post:#4285f4; --ok:#0f9d58; --warnb:#c77700; --err:#d0453f;
+    --sans:"Roboto",system-ui,-apple-system,"Segoe UI",Helvetica,Arial,sans-serif;
+    --mono:"Roboto Mono",ui-monospace,"SF Mono",Menlo,Consolas,monospace;
+  }
+  @media (prefers-color-scheme:dark){
+    :root{
+      --teal:#00695c; --teal-dark:#004d40; --bg:#1a1c20; --side:#16181b; --ink:#e4e7ea;
+      --muted:#9aa4ac; --link:#5ccfc0; --line:#2a2e33; --code-bg:#14161a; --code-ink:#cdd6dd;
+      --inline:#ff7b72; --get:#3ecf8e; --post:#5a92f0; --ok:#3ecf8e; --warnb:#e0a53d; --err:#e2685e;
+    }
+  }
+  :root[data-theme="dark"]{
+    --teal:#00695c; --teal-dark:#004d40; --bg:#1a1c20; --side:#16181b; --ink:#e4e7ea;
+    --muted:#9aa4ac; --link:#5ccfc0; --line:#2a2e33; --code-bg:#14161a; --code-ink:#cdd6dd;
+    --inline:#ff7b72; --get:#3ecf8e; --post:#5a92f0; --ok:#3ecf8e; --warnb:#e0a53d; --err:#e2685e;
+  }
+  :root[data-theme="light"]{
+    --teal:#009485; --teal-dark:#00786b; --bg:#ffffff; --side:#fafbfc; --ink:#1c2126;
+    --muted:#5c6b74; --link:#00857a; --line:#e6eaed; --code-bg:#f4f6f7; --code-ink:#263238;
+    --inline:#e5484d; --get:#0f9d58; --post:#4285f4; --ok:#0f9d58; --warnb:#c77700; --err:#d0453f;
+  }
+  *{box-sizing:border-box}
+  body{margin:0}
+  .app{background:var(--bg);color:var(--ink);font-family:var(--sans);font-size:16px;line-height:1.65}
+  a{color:var(--link);text-decoration:none}
+  a:hover{text-decoration:underline}
+  code{font-family:var(--mono);font-size:.855em}
+  p code,li code,td code{color:var(--inline);background:color-mix(in srgb,var(--inline) 9%,transparent);
+    padding:.1em .35em;border-radius:4px}
+
+  /* Header teal (Material) */
+  header.bar{position:sticky;top:0;z-index:40;background:var(--teal);color:var(--teal-ink);
+    box-shadow:0 2px 6px rgba(0,0,0,.14)}
+  .bar-in{display:flex;align-items:center;gap:16px;max-width:1500px;margin:0 auto;padding:11px 18px}
+  .logo{display:flex;align-items:center;gap:11px;font-weight:600;font-size:19px;letter-spacing:.01em}
+  .logo .mk{width:30px;height:30px;border-radius:50%;background:#fff;display:grid;place-items:center;
+    color:var(--teal);font-weight:800;font-size:16px}
+  .navlinks{display:flex;gap:20px;font-size:14.5px;margin-left:8px}
+  .navlinks a{color:#eafffb;opacity:.92}
+  .navlinks a:hover{opacity:1;text-decoration:none;border-bottom:2px solid #fff;padding-bottom:1px}
+  .bar .spacer{flex:1}
+  .search{display:flex;align-items:center;gap:8px;background:rgba(255,255,255,.16);border-radius:4px;
+    padding:7px 12px;color:#eafffb;font-size:14px;min-width:190px}
+  .search kbd{margin-left:auto;background:rgba(255,255,255,.22);border-radius:3px;padding:1px 6px;font-size:11px;font-family:var(--mono)}
+  .tgl{cursor:pointer;background:rgba(255,255,255,.16);border:0;color:#fff;width:34px;height:34px;
+    border-radius:4px;font-size:15px}
+
+  /* 3-col layout */
+  .grid{display:grid;grid-template-columns:250px minmax(0,1fr) 214px;max-width:1500px;margin:0 auto}
+  aside{position:sticky;top:54px;align-self:start;height:calc(100vh - 54px);overflow-y:auto;font-size:14px}
+  aside.left{border-right:1px solid var(--line);background:var(--side);padding:20px 8px 40px 20px}
+  aside.right{padding:26px 18px 40px 8px}
+  aside.left .grp{font-weight:700;font-size:12.5px;color:var(--ink);margin:18px 0 6px;text-transform:none}
+  aside.left a{display:block;color:var(--muted);padding:5px 12px;border-radius:5px;margin:1px 0;
+    border-left:2px solid transparent}
+  aside.left a:hover{color:var(--ink);text-decoration:none;background:color-mix(in srgb,var(--teal) 7%,transparent)}
+  aside.left a.active{color:var(--link);border-left-color:var(--teal);font-weight:600;
+    background:color-mix(in srgb,var(--teal) 8%,transparent)}
+  aside.right .toc-t{font-size:12px;text-transform:uppercase;letter-spacing:.07em;color:var(--muted);
+    font-weight:700;margin-bottom:10px}
+  aside.right a{display:block;color:var(--muted);font-size:13px;padding:4px 0 4px 12px;border-left:2px solid var(--line)}
+  aside.right a:hover{color:var(--ink);text-decoration:none}
+  aside.right a.active{color:var(--link);border-left-color:var(--teal);font-weight:600}
+
+  main{padding:8px 46px 100px;min-width:0}
+  section{scroll-margin-top:70px}
+  h1{font-size:34px;font-weight:700;letter-spacing:-.01em;margin:.5em 0 .3em;text-wrap:balance}
+  h2{font-size:25px;font-weight:600;margin:1.7em 0 .5em;padding-top:.3em;text-wrap:balance}
+  h2::before{content:"";display:block;height:1px;background:var(--line);margin-bottom:.7em}
+  h3{font-size:18px;font-weight:600;margin:1.5em 0 .3em}
+  .lede{font-size:19px;color:var(--muted);max-width:70ch}
+  p{max-width:74ch}
+  ul{max-width:74ch}
+
+  /* code + tabs */
+  pre{background:var(--code-bg);border-radius:8px;padding:15px 16px;overflow-x:auto;margin:0;
+    border:1px solid var(--line)}
+  pre code{color:var(--code-ink);font-size:13.5px;line-height:1.6;white-space:pre}
+  .codetabs{border:1px solid var(--line);border-radius:8px;overflow:hidden;margin:1em 0;background:var(--code-bg)}
+  .tabrow{display:flex;align-items:center;gap:2px;background:color-mix(in srgb,var(--ink) 4%,var(--code-bg));
+    border-bottom:1px solid var(--line);padding:0 6px}
+  .tabrow button{background:none;border:0;color:var(--muted);font-family:var(--sans);font-size:13px;
+    padding:9px 13px;cursor:pointer;border-bottom:2px solid transparent;margin-bottom:-1px}
+  .tabrow button:hover{color:var(--ink)}
+  .tabrow button.on{color:var(--link);border-bottom-color:var(--teal);font-weight:600}
+  .tabrow .fname{margin-left:auto;font-family:var(--mono);font-size:12px;color:var(--muted);padding-right:6px}
+  .tabrow .cp{color:var(--muted);cursor:pointer;font-size:12px;padding:6px 8px}
+  .tabrow .cp:hover{color:var(--ink)}
+  .codetabs pre{border:0;border-radius:0;margin:0}
+  .codetabs .panel{display:none} .codetabs .panel.on{display:block}
+  .single{position:relative;margin:1em 0}
+  .single .cp{position:absolute;top:8px;right:8px;font-family:var(--sans);font-size:11.5px;color:var(--muted);
+    background:var(--bg);border:1px solid var(--line);border-radius:5px;padding:3px 9px;cursor:pointer}
+  .single .cp:hover{color:var(--ink)}
+  .tk{color:#a626a4} .ts{color:#50a14f} .tn{color:#986801} .tc{color:#a0a1a7;font-style:italic}
+  :root[data-theme="dark"] .tk,@media(prefers-color-scheme:dark){.tk{color:#c678dd}.ts{color:#98c379}.tn{color:#d19a66}.tc{color:#7f848e}}
+
+  /* admonitions (Material) */
+  .adm{border:1px solid var(--line);border-left-width:4px;border-radius:5px;margin:1.1em 0;
+    background:var(--bg);font-size:14.5px;overflow:hidden}
+  .adm .t{font-weight:700;font-size:13.5px;padding:9px 15px 3px;display:flex;align-items:center;gap:8px}
+  .adm .c{padding:2px 15px 12px}
+  .adm.note{border-left-color:var(--note)} .adm.note .t{color:var(--note)}
+  .adm.warn{border-left-color:var(--warn)} .adm.warn .t{color:var(--warnb)}
+  .adm.tip{border-left-color:var(--tip)} .adm.tip .t{color:var(--tip)}
+  .adm .c p{margin:.4em 0}
+
+  /* endpoint */
+  .ep-h{display:flex;align-items:center;gap:11px;flex-wrap:wrap;margin:.4em 0}
+  .m{font-family:var(--mono);font-size:11.5px;font-weight:700;color:#fff;padding:3px 9px;border-radius:5px;text-transform:uppercase}
+  .m.get{background:var(--get)} .m.post{background:var(--post)}
+  .path{font-family:var(--mono);font-size:15px;font-weight:600}
+  .ret{color:var(--muted);font-size:14px}
+
+  /* tables */
+  .tw{overflow-x:auto;border:1px solid var(--line);border-radius:8px;margin:1em 0}
+  table{border-collapse:collapse;width:100%;font-size:14px;min-width:480px}
+  th,td{text-align:left;padding:9px 14px;border-bottom:1px solid var(--line);vertical-align:top}
+  th{background:color-mix(in srgb,var(--ink) 4%,transparent);font-weight:600;font-size:13px}
+  tr:last-child td{border-bottom:0}
+  .badge{display:inline-block;font-family:var(--mono);font-size:11px;font-weight:700;padding:2px 8px;border-radius:12px}
+  .b-ok{color:var(--ok);background:color-mix(in srgb,var(--ok) 14%,transparent)}
+  .b-warn{color:var(--warnb);background:color-mix(in srgb,var(--warnb) 15%,transparent)}
+  .b-err{color:var(--err);background:color-mix(in srgb,var(--err) 14%,transparent)}
+  .cards{display:grid;grid-template-columns:repeat(auto-fit,minmax(210px,1fr));gap:12px;margin:1.1em 0}
+  .card{border:1px solid var(--line);border-radius:8px;padding:13px 15px}
+  .card .k{font-size:12px;color:var(--muted);text-transform:uppercase;letter-spacing:.04em;font-weight:700}
+  .card .v{font-family:var(--mono);font-size:13.5px;margin-top:4px;word-break:break-all}
+  .foot{color:var(--muted);font-size:13.5px;border-top:1px solid var(--line);margin-top:44px;padding-top:18px}
+  @media (max-width:1160px){ .grid{grid-template-columns:230px minmax(0,1fr)} aside.right{display:none} main{padding-right:30px} }
+  @media (max-width:800px){ .grid{grid-template-columns:1fr} aside.left{display:none} main{padding:12px 20px 80px} .navlinks,.search{display:none} }
+</style>
+
+<div class="app">
+  <header class="bar">
+    <div class="bar-in">
+      <div class="logo"><span class="mk">✦</span> Lucera Metrics API</div>
+      <nav class="navlinks">
+        <a href="#intro">Guía</a><a href="#endpoints">Referencia</a>
+        <a href="#react">Integración</a><a href="#interactivo">/docs</a>
+      </nav>
+      <span class="spacer"></span>
+      <div class="search">🔎 Buscar<kbd>⌘K</kbd></div>
+      <button class="tgl" id="themeToggle" aria-label="Tema">◐</button>
+    </div>
+  </header>
+
+  <div class="grid">
+    <aside class="left" id="leftnav">
+      <div class="grp">Empezar</div>
+      <a href="#intro">Introducción</a>
+      <a href="#quickstart">Quickstart</a>
+      <a href="#auth">Autenticación</a>
+      <a href="#convenciones">Convenciones</a>
+      <div class="grp">Referencia de endpoints</div>
+      <a href="#acudientes">Acudientes</a>
+      <a href="#pacientes">Pacientes</a>
+      <a href="#chats">Chats</a>
+      <a href="#pagos">Pagos</a>
+      <a href="#centros">Centros de salud</a>
+      <a href="#catalogos">Seguros y especialidades</a>
+      <a href="#stats">Estadísticas / KPIs</a>
+      <div class="grp">Integración</div>
+      <a href="#react">Conectar el dashboard</a>
+      <a href="#futuros">Endpoints futuros</a>
+      <a href="#errores">Errores</a>
+      <a href="#interactivo">Docs interactivas</a>
+    </aside>
+
+    <main>
+      <section id="intro">
+        <h1>Lucera Metrics API</h1>
+        <p class="lede">API REST de solo lectura que alimenta el dashboard del cliente con datos reales
+          del chatbot pediátrico. Rápida de conectar: cada respuesta ya trae la forma exacta de tus tipos.</p>
+
+        <div class="cards">
+          <div class="card"><div class="k">Base URL</div><div class="v">https://lucera-metrics-877493497677.us-central1.run.app</div></div>
+          <div class="card"><div class="k">Auth</div><div class="v">JWT · Bearer</div></div>
+          <div class="card"><div class="k">Formato</div><div class="v">JSON · UTF-8 · CORS abierto</div></div>
+        </div>
+
+        <div class="adm tip"><div class="t">💡 Filosofía</div><div class="c">
+          <p>Los nombres de campos coinciden <b>1:1</b> con los tipos de tu <code>src/lib/mockData.ts</code>.
+          Migrar es reemplazar <code>import { acudientes } from "@/lib/mockData"</code> por una llamada
+          <code>fetch</code> — tus componentes no cambian.</p></div></div>
+      </section>
+
+      <section id="quickstart">
+        <h2>Quickstart</h2>
+        <p>Autentícate, guarda el token y úsalo en cada llamada. Elige tu lenguaje:</p>
+        <div class="codetabs" data-tabs>
+          <div class="tabrow">
+            <button class="on" data-t="0">cURL</button>
+            <button data-t="1">TypeScript</button>
+            <button data-t="2">Python</button>
+            <span class="cp" data-copy>Copiar</span>
+          </div>
+          <div class="panel on"><pre><code><span class="tc"># 1 · login → token</span>
+curl -X POST <span class="ts">"$BASE/auth/login"</span> \
+  -H <span class="ts">"Content-Type: application/json"</span> \
+  -d <span class="ts">'{"email":"admin@lucera.pa","password":"Lucera2026!"}'</span>
+
+<span class="tc"># 2 · usa el token</span>
+curl <span class="ts">"$BASE/api/acudientes"</span> -H <span class="ts">"Authorization: Bearer $TOKEN"</span></code></pre></div>
+          <div class="panel"><pre><code><span class="tk">const</span> base = <span class="ts">"https://lucera-metrics-877493497677.us-central1.run.app"</span>;
+<span class="tk">const</span> { token } = <span class="tk">await</span> (<span class="tk">await</span> fetch(<span class="ts">`${base}/auth/login`</span>, {
+  method: <span class="ts">"POST"</span>, headers: { <span class="ts">"Content-Type"</span>: <span class="ts">"application/json"</span> },
+  body: JSON.stringify({ email: <span class="ts">"admin@lucera.pa"</span>, password: <span class="ts">"Lucera2026!"</span> }),
+})).json();
+
+<span class="tk">const</span> acudientes = <span class="tk">await</span> (<span class="tk">await</span> fetch(<span class="ts">`${base}/api/acudientes`</span>, {
+  headers: { Authorization: <span class="ts">`Bearer ${token}`</span> },
+})).json();</code></pre></div>
+          <div class="panel"><pre><code><span class="tk">import</span> requests
+base = <span class="ts">"https://lucera-metrics-877493497677.us-central1.run.app"</span>
+
+tok = requests.post(f<span class="ts">"{base}/auth/login"</span>,
+    json={<span class="ts">"email"</span>: <span class="ts">"admin@lucera.pa"</span>, <span class="ts">"password"</span>: <span class="ts">"Lucera2026!"</span>}).json()[<span class="ts">"token"</span>]
+
+acudientes = requests.get(f<span class="ts">"{base}/api/acudientes"</span>,
+    headers={<span class="ts">"Authorization"</span>: f<span class="ts">"Bearer {tok}"</span>}).json()</code></pre></div>
+        </div>
+      </section>
+
+      <section id="auth">
+        <h2>Autenticación</h2>
+        <p>La API usa <b>JSON Web Tokens</b>. El dashboard hace login una vez, recibe un token firmado y
+          lo envía en <code>Authorization</code> en cada petición. El token <b>expira a las 12 h</b>;
+          al caducar, la API responde <span class="badge b-warn">401</span> y hay que volver a loguear.</p>
+
+        <div class="ep-h"><span class="m post">post</span><span class="path">/auth/login</span>
+          <span class="ret">→ <code>{ token, user }</code> · público</span></div>
+        <div class="codetabs" data-tabs>
+          <div class="tabrow"><button class="on" data-t="0">Request</button><button data-t="1">Response 200</button>
+            <span class="cp" data-copy>Copiar</span></div>
+          <div class="panel on"><pre><code>{ <span class="tk">"email"</span>: <span class="ts">"admin@lucera.pa"</span>, <span class="tk">"password"</span>: <span class="ts">"Lucera2026!"</span> }</code></pre></div>
+          <div class="panel"><pre><code>{
+  <span class="tk">"token"</span>: <span class="ts">"eyJhbGciOiJIUzI1Ni…"</span>,
+  <span class="tk">"user"</span>: { <span class="tk">"email"</span>: <span class="ts">"admin@lucera.pa"</span>, <span class="tk">"nombre"</span>: <span class="ts">"Admin Técnico"</span>, <span class="tk">"rol"</span>: <span class="ts">"Admin"</span> }
+}</code></pre></div>
+        </div>
+
+        <h3>Cuentas demo</h3>
+        <p>Contraseña <code>Lucera2026!</code> para todas mientras el cliente evalúa cada rol:</p>
+        <div class="tw"><table>
+          <tr><th>Email</th><th>Rol</th><th>Uso</th></tr>
+          <tr><td><code>admin@lucera.pa</code></td><td>Admin</td><td>Acceso completo</td></tr>
+          <tr><td><code>ventas@lucera.pa</code></td><td>Ventas</td><td>Métricas de negocio</td></tr>
+          <tr><td><code>esanchez@lucera.pa</code></td><td>Médico</td><td>Vista clínica</td></tr>
+        </table></div>
+        <div class="adm warn"><div class="t">⚠️ Antes de producción</div><div class="c">
+          <p>Cambia la contraseña demo y define cuentas reales con la variable <code>METRICS_USERS</code>
+          (JSON). El <code>rol</code> viaja en el token para decidir qué vistas mostrar.</p></div></div>
+      </section>
+
+      <section id="convenciones">
+        <h2>Convenciones</h2>
+        <div class="tw"><table>
+          <tr><th>Tema</th><th>Convención</th></tr>
+          <tr><td>Auth</td><td><code>Authorization: Bearer &lt;token&gt;</code> en todo <code>/api/*</code></td></tr>
+          <tr><td>Fechas</td><td>Timestamps <code>"YYYY-MM-DD HH:MM"</code>; nacimiento <code>"YYYY-MM-DD"</code></td></tr>
+          <tr><td>IDs</td><td>UUID string</td></tr>
+          <tr><td>Colecciones</td><td>Array JSON (vacío <code>[]</code> si no hay datos)</td></tr>
+          <tr><td>Triaje</td><td><code>"general"</code> · <code>"urgente"</code> · <code>"emergencia"</code></td></tr>
+        </table></div>
+      </section>
+
+      <section id="endpoints"></section>
+      <section id="acudientes">
+        <h2>Acudientes</h2>
+        <div class="ep-h"><span class="m get">get</span><span class="path">/api/acudientes</span>
+          <span class="ret">→ <code>Acudiente[]</code> (con <code>ninos: NinoPaciente[]</code>)</span></div>
+        <div class="single"><span class="cp" data-copy>Copiar</span><pre><code>[
+  {
+    <span class="tk">"id"</span>: <span class="ts">"3015d1d6-af02-…"</span>, <span class="tk">"telefono"</span>: <span class="ts">"50762342370"</span>,
+    <span class="tk">"email"</span>: <span class="ts">"ana.muschett@test.lucera"</span>, <span class="tk">"nombre"</span>: <span class="ts">"Ana Muschett"</span>,
+    <span class="tk">"relacion"</span>: <span class="ts">"Madre"</span>,        <span class="tc">// Madre|Padre|Tutor|Abuelo/a</span>
+    <span class="tk">"pais"</span>: <span class="ts">"Panamá"</span>, <span class="tk">"ciudad"</span>: <span class="ts">"Ciudad de Panamá"</span>,
+    <span class="tk">"estado"</span>: <span class="ts">"activa"</span>,       <span class="tc">// activa|suspendida|baja</span>
+    <span class="tk">"plan"</span>: <span class="ts">"Gratuito"</span>,       <span class="tc">// Gratuito|Premium Mensual|Premium Anual</span>
+    <span class="tk">"registrado"</span>: <span class="ts">"2026-07-01 07:04"</span>,
+    <span class="tk">"ninos"</span>: [ { <span class="tk">"id"</span>:<span class="ts">"…"</span>, <span class="tk">"nombre"</span>:<span class="ts">"Lucas Muschett"</span>, <span class="tk">"fechaNacimiento"</span>:<span class="ts">"2022-04-05"</span>,
+        <span class="tk">"tipoSangre"</span>:null, <span class="tk">"pesoKg"</span>:<span class="tn">16.5</span>, <span class="tk">"condiciones"</span>:[], <span class="tk">"alergias"</span>:[<span class="ts">"Maní (cacahuate)"</span>] } ]
+  }
+]</code></pre></div>
+      </section>
+
+      <section id="pacientes">
+        <h2>Pacientes</h2>
+        <div class="ep-h"><span class="m get">get</span><span class="path">/api/pacientes</span>
+          <span class="ret">→ <code>Paciente[]</code> (niños aplanados con tutor)</span></div>
+        <div class="single"><span class="cp" data-copy>Copiar</span><pre><code>[ { <span class="tk">"id"</span>:<span class="ts">"…"</span>, <span class="tk">"nombre"</span>:<span class="ts">"Lucas Muschett"</span>, <span class="tk">"cedula"</span>:<span class="ts">""</span>, <span class="tk">"edad"</span>:<span class="tn">4</span>,
+    <span class="tk">"tutor"</span>:<span class="ts">"Ana Muschett"</span>, <span class="tk">"telefono"</span>:<span class="ts">"50762342370"</span>,
+    <span class="tk">"estado"</span>:<span class="ts">"activo"</span>, <span class="tk">"ultimaConsulta"</span>:<span class="ts">"2026-07-10 15:47"</span> } ]</code></pre></div>
+        <div class="adm note"><div class="t">ℹ️ Nota</div><div class="c"><p><code>cedula</code> llega vacía por ahora
+          (el bot no la solicita todavía).</p></div></div>
+      </section>
+
+      <section id="chats">
+        <h2>Chats</h2>
+        <div class="ep-h"><span class="m get">get</span><span class="path">/api/chats</span>
+          <span class="ret">→ <code>ChatSesion[]</code> (con <code>mensajes[]</code>)</span></div>
+        <div class="single"><span class="cp" data-copy>Copiar</span><pre><code>[
+  {
+    <span class="tk">"id"</span>:<span class="ts">"1dbe81b0-…"</span>, <span class="tk">"acudiente"</span>:<span class="ts">"Ana Muschett"</span>, <span class="tk">"paciente"</span>:<span class="ts">"Julián Muschett"</span>,
+    <span class="tk">"telefono"</span>:<span class="ts">"50762342370"</span>,
+    <span class="tk">"triaje"</span>:<span class="ts">"general"</span>,       <span class="tc">// general|urgente|emergencia</span>
+    <span class="tk">"tipoAtencion"</span>:<span class="ts">"Virtual"</span>, <span class="tk">"resumenIA"</span>:null, <span class="tk">"calificacion"</span>:null,
+    <span class="tk">"inicio"</span>:<span class="ts">"2026-07-10 15:44"</span>, <span class="tk">"cierre"</span>:<span class="ts">"2026-07-10 15:50"</span>,
+    <span class="tk">"estado"</span>:<span class="ts">"cerrada"</span>,      <span class="tc">// activa|esperando|cerrada</span>
+    <span class="tk">"mensajes"</span>:[ { <span class="tk">"rol"</span>:<span class="ts">"acudiente"</span>, <span class="tk">"texto"</span>:<span class="ts">"Mi hijo tiene fiebre"</span>, <span class="tk">"hora"</span>:<span class="ts">"…"</span>,
+        <span class="tk">"tipo"</span>:<span class="ts">"texto"</span>, <span class="tk">"alertas"</span>:[] } ]   <span class="tc">// rol: acudiente|bot|sistema</span>
+  }
+]</code></pre></div>
+        <div class="adm warn"><div class="t">⚠️ Endpoint pesado</div><div class="c"><p>Trae <b>todos</b> los
+          mensajes de cada chat. Para listas grandes conviene cachear, o —próxima versión— separar en
+          <code>/api/chats</code> (lista) + <code>/api/chats/{id}</code> (detalle).</p></div></div>
+      </section>
+
+      <section id="pagos">
+        <h2>Pagos</h2>
+        <div class="ep-h"><span class="m get">get</span><span class="path">/api/pagos</span>
+          <span class="ret">→ <code>Pago[]</code></span></div>
+        <div class="single"><span class="cp" data-copy>Copiar</span><pre><code>[ { <span class="tk">"id"</span>:<span class="ts">"txn_…"</span>, <span class="tk">"acudiente"</span>:<span class="ts">"Nicolás Orozco"</span>, <span class="tk">"monto"</span>:<span class="tn">15.0</span>,
+    <span class="tk">"metodo"</span>:<span class="ts">"Yappy"</span>,          <span class="tc">// Stripe|Yappy</span>
+    <span class="tk">"plan"</span>:<span class="ts">"Premium Mensual"</span>, <span class="tk">"estado"</span>:<span class="ts">"confirmado"</span>,  <span class="tc">// confirmado|pendiente|fallido|reembolsado</span>
+    <span class="tk">"fecha"</span>:<span class="ts">"2026-07-01 07:20"</span>, <span class="tk">"respuestaProveedor"</span>:<span class="ts">"confirmed"</span>, <span class="tk">"tipoPago"</span>:<span class="ts">"Crédito"</span> } ]</code></pre></div>
+      </section>
+
+      <section id="centros">
+        <h2>Centros de salud</h2>
+        <div class="ep-h"><span class="m get">get</span><span class="path">/api/centros</span>
+          <span class="ret">→ <code>Centro[]</code></span></div>
+        <div class="single"><span class="cp" data-copy>Copiar</span><pre><code>[ { <span class="tk">"id"</span>:<span class="ts">"…"</span>, <span class="tk">"nombre"</span>:<span class="ts">"Hospital del Niño"</span>, <span class="tk">"tipo"</span>:<span class="ts">"Hospital"</span>,   <span class="tc">// Hospital|Clínica|Urgencias</span>
+    <span class="tk">"ciudad"</span>:<span class="ts">"Ciudad de Panamá"</span>, <span class="tk">"direccion"</span>:<span class="ts">"Av. Balboa"</span>,
+    <span class="tk">"telefono"</span>:<span class="ts">"+507 512-9800"</span>, <span class="tk">"horarios"</span>:<span class="ts">"24/7"</span>, <span class="tk">"recomendado"</span>:true } ]</code></pre></div>
+      </section>
+
+      <section id="catalogos">
+        <h2>Seguros y especialidades</h2>
+        <div class="ep-h"><span class="m get">get</span><span class="path">/api/seguros</span>
+          <span class="ret">→ <code>{ id, nombre }[]</code></span></div>
+        <div class="ep-h" style="margin-top:1.2em"><span class="m get">get</span><span class="path">/api/especialidades</span>
+          <span class="ret">→ <code>string[]</code></span></div>
+        <div class="single"><span class="cp" data-copy>Copiar</span><pre><code><span class="tc">// /api/seguros</span>   [ { <span class="tk">"id"</span>:<span class="ts">"…"</span>, <span class="tk">"nombre"</span>:<span class="ts">"MAPFRE"</span> }, … ]
+<span class="tc">// /api/especialidades</span>   [ <span class="ts">"Pediatría"</span>, <span class="ts">"Neonatología"</span>, <span class="ts">"Dermatología"</span>, … ]</code></pre></div>
+      </section>
+
+      <section id="stats">
+        <h2>Estadísticas / KPIs</h2>
+        <p>Endpoints agregados, listos para tarjetas y gráficas (Recharts).</p>
+        <div class="ep-h"><span class="m get">get</span><span class="path">/api/stats/kpis</span>
+          <span class="ret">→ objeto <code>kpisGenerales</code></span></div>
+        <div class="single"><span class="cp" data-copy>Copiar</span><pre><code>{ <span class="tk">"acudientesActivos"</span>:<span class="tn">5</span>, <span class="tk">"ninosRegistrados"</span>:<span class="tn">17</span>, <span class="tk">"sesionesMes"</span>:<span class="tn">64</span>,
+  <span class="tk">"conversionPremium"</span>:<span class="tn">40.0</span>, <span class="tk">"csat"</span>:<span class="tn">0</span>, <span class="tk">"emergenciasDetectadas"</span>:<span class="tn">6</span>,
+  <span class="tk">"derivacionesPresenciales"</span>:<span class="tn">0</span>, <span class="tk">"ingresosMes"</span>:<span class="tn">30.0</span> }</code></pre></div>
+        <div class="tw"><table>
+          <tr><th>Endpoint</th><th>Devuelve</th><th>Para</th></tr>
+          <tr><td><code>/api/stats/sesiones-por-mes</code></td><td><code>{mes,sesiones,premium}[]</code></td><td>Líneas / barras</td></tr>
+          <tr><td><code>/api/stats/triaje</code></td><td><code>{nivel,value,color}[]</code></td><td>Dona de triaje</td></tr>
+          <tr><td><code>/api/stats/planes</code></td><td><code>{plan,usuarios,color}[]</code></td><td>Distribución por plan</td></tr>
+          <tr><td><code>/api/stats/tipo-atencion</code></td><td><code>{tipo,value}[]</code></td><td>Virtual vs derivada</td></tr>
+          <tr><td><code>/api/stats/csat</code></td><td><code>{semana,csat}[]</code></td><td>Tendencia satisfacción</td></tr>
+        </table></div>
+      </section>
+
+      <section id="react">
+        <h2>Conectar el dashboard (React)</h2>
+        <p>Reemplaza los imports de <code>mockData</code> por este cliente. Guarda el token y adjúntalo
+          en cada llamada.</p>
+        <div class="codetabs" data-tabs>
+          <div class="tabrow"><button class="on" data-t="0">api.ts</button><button data-t="1">React Query</button>
+            <span class="fname">src/lib/</span><span class="cp" data-copy>Copiar</span></div>
+          <div class="panel on"><pre><code><span class="tk">const</span> BASE = import.meta.env.VITE_API_URL ??
+  <span class="ts">"https://lucera-metrics-877493497677.us-central1.run.app"</span>;
+
+<span class="tk">export async function</span> login(email: string, password: string) {
+  <span class="tk">const</span> r = <span class="tk">await</span> fetch(<span class="ts">`${BASE}/auth/login`</span>, {
+    method: <span class="ts">"POST"</span>, headers: { <span class="ts">"Content-Type"</span>: <span class="ts">"application/json"</span> },
+    body: JSON.stringify({ email, password }),
+  });
+  <span class="tk">if</span> (!r.ok) <span class="tk">throw new</span> Error(<span class="ts">"Correo o contraseña incorrectos"</span>);
+  <span class="tk">const</span> { token, user } = <span class="tk">await</span> r.json();
+  localStorage.setItem(<span class="ts">"lucera_token"</span>, token);
+  <span class="tk">return</span> user;   <span class="tc">// { email, nombre, rol } → guárdalo en tu AuthContext</span>
+}
+
+<span class="tk">export async function</span> api&lt;T&gt;(path: string): Promise&lt;T&gt; {
+  <span class="tk">const</span> token = localStorage.getItem(<span class="ts">"lucera_token"</span>);
+  <span class="tk">const</span> r = <span class="tk">await</span> fetch(<span class="ts">`${BASE}${path}`</span>, { headers: { Authorization: <span class="ts">`Bearer ${token}`</span> } });
+  <span class="tk">if</span> (r.status === <span class="tn">401</span>) { localStorage.removeItem(<span class="ts">"lucera_token"</span>);
+    <span class="tk">throw new</span> Error(<span class="ts">"Tu sesión expiró, vuelve a iniciar"</span>); }
+  <span class="tk">if</span> (!r.ok) <span class="tk">throw new</span> Error(<span class="ts">`Error ${r.status}`</span>);
+  <span class="tk">return</span> r.json();
+}</code></pre></div>
+          <div class="panel"><pre><code><span class="tk">import</span> { useQuery } <span class="tk">from</span> <span class="ts">"@tanstack/react-query"</span>;
+<span class="tk">import</span> { api } <span class="tk">from</span> <span class="ts">"@/lib/api"</span>;
+<span class="tk">import type</span> { Acudiente } <span class="tk">from</span> <span class="ts">"@/lib/mockData"</span>;  <span class="tc">// reutiliza tus tipos</span>
+
+<span class="tk">export function</span> useAcudientes() {
+  <span class="tk">return</span> useQuery({
+    queryKey: [<span class="ts">"acudientes"</span>],
+    queryFn: () =&gt; api&lt;Acudiente[]&gt;(<span class="ts">"/api/acudientes"</span>),
+  });
+}</code></pre></div>
+        </div>
+        <div class="adm tip"><div class="t">💡 Migración limpia</div><div class="c"><p>Como los campos
+          coinciden con <code>mockData.ts</code>, basta cambiar el import por <code>useAcudientes()</code>.
+          Tus componentes (StatCard, TriageBadge, tablas) quedan igual.</p></div></div>
+      </section>
+
+      <section id="futuros">
+        <h2>Endpoints futuros</h2>
+        <p>Existen y responden <code>[]</code> hoy (funcionalidades que el producto aún no tiene). Se
+          llenan en la Fase 2 sin cambiar el contrato.</p>
+        <div class="tw"><table>
+          <tr><th>Ruta</th><th>Estado</th><th>Se llena cuando…</th></tr>
+          <tr><td><code>/api/medicos</code> · <code>/api/especialistas</code></td><td><span class="badge b-warn">[]</span></td><td>haya médicos dados de alta</td></tr>
+          <tr><td><code>/api/medicamentos</code></td><td><span class="badge b-warn">[]</span></td><td>se cargue el catálogo</td></tr>
+          <tr><td><code>/api/disponibilidad</code> · <code>/api/citas</code></td><td><span class="badge b-warn">[]</span></td><td>exista la agenda</td></tr>
+          <tr><td><code>/api/logs</code></td><td><span class="badge b-warn">[]</span></td><td>se active la auditoría</td></tr>
+        </table></div>
+      </section>
+
+      <section id="errores">
+        <h2>Errores</h2>
+        <div class="tw"><table>
+          <tr><th>Código</th><th>Significado</th><th>Qué hacer</th></tr>
+          <tr><td><span class="badge b-ok">200</span></td><td>OK</td><td>—</td></tr>
+          <tr><td><span class="badge b-warn">401</span></td><td>Sin token / inválido / expirado</td><td>Redirige a login</td></tr>
+          <tr><td><span class="badge b-warn">422</span></td><td>Body de login mal formado</td><td>Envía email y password como JSON</td></tr>
+          <tr><td><span class="badge b-err">500</span></td><td>Error de servidor / BD</td><td>Reintenta; si persiste, avísanos</td></tr>
+        </table></div>
+        <p>El cuerpo sigue el estándar FastAPI: <code>{ "detail": "mensaje legible" }</code>.</p>
+      </section>
+
+      <section id="interactivo">
+        <h2>Docs interactivas</h2>
+        <p>FastAPI genera automáticamente estas vistas desde el esquema OpenAPI:</p>
+        <div class="cards">
+          <div class="card"><div class="k">Swagger UI</div><div class="v"><a href="https://lucera-metrics-877493497677.us-central1.run.app/docs">/docs</a></div></div>
+          <div class="card"><div class="k">ReDoc</div><div class="v"><a href="https://lucera-metrics-877493497677.us-central1.run.app/redoc">/redoc</a></div></div>
+          <div class="card"><div class="k">OpenAPI</div><div class="v"><a href="https://lucera-metrics-877493497677.us-central1.run.app/openapi.json">/openapi.json</a></div></div>
+        </div>
+        <p class="foot">Lucera Metrics API · v1.0 · repo <code>johanpina/lucera-metricsAPI</code> ·
+          contrato basado en <code>src/lib/mockData.ts</code>.</p>
+      </section>
+    </main>
+
+    <aside class="right">
+      <div class="toc-t">En esta página</div>
+      <div id="toc"></div>
+    </aside>
+  </div>
+</div>
+
+<script>
+  const root=document.documentElement;
+  document.getElementById('themeToggle').addEventListener('click',()=>{
+    const cur=root.getAttribute('data-theme')||(matchMedia('(prefers-color-scheme:dark)').matches?'dark':'light');
+    root.setAttribute('data-theme',cur==='dark'?'light':'dark');
+  });
+  // code tabs
+  document.querySelectorAll('[data-tabs]').forEach(box=>{
+    const btns=[...box.querySelectorAll('.tabrow button')], panels=[...box.querySelectorAll('.panel')];
+    btns.forEach(b=>b.addEventListener('click',()=>{
+      btns.forEach(x=>x.classList.remove('on')); panels.forEach(p=>p.classList.remove('on'));
+      b.classList.add('on'); panels[+b.dataset.t].classList.add('on');
+    }));
+  });
+  // copy
+  document.querySelectorAll('[data-copy]').forEach(cp=>cp.addEventListener('click',()=>{
+    const box=cp.closest('.codetabs,.single');
+    const code=box.querySelector('.panel.on code,pre code');
+    navigator.clipboard.writeText(code.innerText);
+    const t=cp.textContent; cp.textContent='¡Copiado!'; setTimeout(()=>cp.textContent=t,1300);
+  }));
+  // build right TOC from h2
+  const toc=document.getElementById('toc');
+  document.querySelectorAll('main section[id] > h2').forEach(h=>{
+    const id=h.parentElement.id, a=document.createElement('a');
+    a.href='#'+id; a.textContent=h.textContent; a.dataset.id=id; toc.appendChild(a);
+  });
+  // scrollspy (both navs)
+  const allNav=[...document.querySelectorAll('aside.left a, aside.right a')];
+  const byId=id=>allNav.filter(a=>a.getAttribute('href')==='#'+id);
+  const obs=new IntersectionObserver(es=>es.forEach(e=>{if(e.isIntersecting){
+    allNav.forEach(a=>a.classList.remove('active')); byId(e.target.id).forEach(a=>a.classList.add('active'));
+  }}),{rootMargin:'-12% 0px -78% 0px'});
+  document.querySelectorAll('main section[id]').forEach(s=>obs.observe(s));
+  allNav.forEach(a=>a.addEventListener('click',e=>{
+    const id=a.getAttribute('href').slice(1), el=document.getElementById(id);
+    if(el){e.preventDefault(); el.scrollIntoView({behavior:'smooth',block:'start'});}
+  }));
+</script>
