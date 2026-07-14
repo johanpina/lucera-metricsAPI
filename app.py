@@ -1,9 +1,8 @@
-"""lucera-metrics — API de métricas para el dashboard del cliente (Mauro).
+"""lucera-metrics — Metrics API for the client dashboard.
 
-Solo lectura sobre la BD de Aiven. Devuelve los datos en la forma EXACTA que
-espera el dashboard (ver src/lib/mockData.ts de su repo). Protegida por API key
-(header X-API-Key). Las secciones sin datos aún (médicos, medicamentos, agenda,
-auditoría) devuelven arreglos vacíos para no romper la UI.
+Read-only over the Aiven database. English field names, values and routes.
+Protected with JWT (login) — see /auth/login. Sections without data yet
+(doctors, medications, scheduling, audit) return empty arrays.
 """
 
 from __future__ import annotations
@@ -23,7 +22,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import HTMLResponse
 from pydantic import BaseModel
 
-# ── Conexión a Aiven (read-only) ─────────────────────────────────────────────
+# ── DB connection (Aiven, read-only) ─────────────────────────────────────────
 DB = dict(
     host=os.environ.get("MYSQL_HOST", "127.0.0.1"),
     port=int(os.environ.get("MYSQL_PORT", "3306")),
@@ -46,41 +45,11 @@ if os.environ.get("MYSQL_SSL", "").lower() in ("1", "true", "yes"):
         _ctx.verify_mode = _ssl.CERT_NONE
     DB["ssl"] = _ctx
 
-# ── Auth (JWT del dashboard + API key opcional para server-to-server) ────────
-JWT_SECRET = os.environ.get("JWT_SECRET", "lucera-metrics-dev-secret-CHANGE-ME")
-JWT_TTL = int(os.environ.get("JWT_TTL_HOURS", "12")) * 3600
-API_KEY = os.environ.get("METRICS_API_KEY", "")  # opcional (scripts / server-to-server)
-
-
-def _load_users() -> dict:
-    """Usuarios del dashboard. METRICS_USERS (JSON) o cuentas demo por defecto.
-
-    Formato METRICS_USERS: [{"email","nombre","rol","password"}]  (o "pass_sha256").
-    """
-    raw = os.environ.get("METRICS_USERS", "").strip()
-    if raw:
-        try:
-            return {u["email"].lower(): u for u in json.loads(raw)}
-        except Exception:  # noqa: BLE001
-            pass
-    pwd = os.environ.get("METRICS_DEMO_PASSWORD", "Lucera2026!")
-    demo = [
-        {"email": "admin@lucera.pa", "nombre": "Admin Técnico", "rol": "Admin", "password": pwd},
-        {"email": "ventas@lucera.pa", "nombre": "Ventas", "rol": "Ventas", "password": pwd},
-        {"email": "esanchez@lucera.pa", "nombre": "Dra. Elena Sánchez", "rol": "Médico", "password": pwd},
-    ]
-    return {u["email"].lower(): u for u in demo}
-
-
-USERS = _load_users()
-
 
 def _q(sql: str, args: tuple = ()) -> list[dict]:
     conn = pymysql.connect(**DB)
     try:
         with conn.cursor() as cur:
-            # Sin args: NO pasar la tupla vacía para que pymysql no intente
-            # formatear con % (rompería literales como DATE_FORMAT '%Y-%m-01').
             if args:
                 cur.execute(sql, args)
             else:
@@ -91,7 +60,7 @@ def _q(sql: str, args: tuple = ()) -> list[dict]:
 
 
 def _clean(v):
-    if isinstance(v, (datetime,)):
+    if isinstance(v, datetime):
         return v.strftime("%Y-%m-%d %H:%M")
     if isinstance(v, date):
         return v.isoformat()
@@ -100,17 +69,36 @@ def _clean(v):
     return v
 
 
-def _row(d: dict) -> dict:
-    return {k: _clean(v) for k, v in d.items()}
+# ── Auth (JWT + optional API key) ────────────────────────────────────────────
+JWT_SECRET = os.environ.get("JWT_SECRET", "lucera-metrics-dev-secret-CHANGE-ME")
+JWT_TTL = int(os.environ.get("JWT_TTL_HOURS", "12")) * 3600
+API_KEY = os.environ.get("METRICS_API_KEY", "")
 
 
-# ── Auth ─────────────────────────────────────────────────────────────────────
+def _load_users() -> dict:
+    raw = os.environ.get("METRICS_USERS", "").strip()
+    if raw:
+        try:
+            return {u["email"].lower(): u for u in json.loads(raw)}
+        except Exception:  # noqa: BLE001
+            pass
+    pwd = os.environ.get("METRICS_DEMO_PASSWORD", "Lucera2026!")
+    demo = [
+        {"email": "admin@lucera.pa", "name": "Admin Técnico", "role": "Admin", "password": pwd},
+        {"email": "ventas@lucera.pa", "name": "Ventas", "role": "Sales", "password": pwd},
+        {"email": "esanchez@lucera.pa", "name": "Dra. Elena Sánchez", "role": "Doctor", "password": pwd},
+    ]
+    return {u["email"].lower(): u for u in demo}
+
+
+USERS = _load_users()
+
+
 def _check_password(user: dict, password: str) -> bool:
     if "pass_sha256" in user:
         import hashlib
 
-        h = hashlib.sha256(password.encode()).hexdigest()
-        return hmac.compare_digest(h, str(user["pass_sha256"]))
+        return hmac.compare_digest(hashlib.sha256(password.encode()).hexdigest(), str(user["pass_sha256"]))
     return hmac.compare_digest(str(user.get("password", "")), password)
 
 
@@ -118,18 +106,17 @@ def require_auth(
     authorization: str | None = Header(default=None),
     x_api_key: str | None = Header(default=None),
 ) -> dict:
-    """Exige JWT válido (Bearer) del dashboard, o la API key (server-to-server)."""
     if API_KEY and x_api_key and hmac.compare_digest(x_api_key, API_KEY):
-        return {"sub": "apikey", "rol": "Admin"}
+        return {"sub": "apikey", "role": "Admin"}
     if authorization and authorization.lower().startswith("bearer "):
         token = authorization.split(" ", 1)[1].strip()
         try:
             return jwt.decode(token, JWT_SECRET, algorithms=["HS256"])
         except jwt.ExpiredSignatureError:
-            raise HTTPException(status_code=401, detail="Token expirado. Vuelve a iniciar sesión.")
+            raise HTTPException(status_code=401, detail="Token expired. Please log in again.")
         except Exception:  # noqa: BLE001
-            raise HTTPException(status_code=401, detail="Token inválido.")
-    raise HTTPException(status_code=401, detail="No autenticado (envía Bearer <jwt> o X-API-Key).")
+            raise HTTPException(status_code=401, detail="Invalid token.")
+    raise HTTPException(status_code=401, detail="Not authenticated (send Bearer <jwt> or X-API-Key).")
 
 
 class LoginIn(BaseModel):
@@ -138,71 +125,20 @@ class LoginIn(BaseModel):
 
 
 app = FastAPI(title="Lucera Metrics API", version="1.0")
-app.add_middleware(
-    CORSMiddleware, allow_origins=["*"], allow_methods=["GET", "POST"], allow_headers=["*"]
-)
+app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_methods=["GET", "POST"], allow_headers=["*"])
 
 
 @app.post("/auth/login")
 def login(body: LoginIn) -> dict:
-    """Login del dashboard. Devuelve un JWT (Bearer) para las rutas /api/*."""
     u = USERS.get((body.email or "").lower().strip())
     if u is None or not _check_password(u, body.password or ""):
-        raise HTTPException(status_code=401, detail="Correo o contraseña incorrectos.")
+        raise HTTPException(status_code=401, detail="Wrong email or password.")
     now = int(time.time())
-    payload = {
-        "sub": body.email.lower().strip(),
-        "nombre": u["nombre"],
-        "rol": u["rol"],
-        "iat": now,
-        "exp": now + JWT_TTL,
-    }
+    payload = {"sub": body.email.lower().strip(), "name": u["name"], "role": u["role"], "iat": now, "exp": now + JWT_TTL}
     token = jwt.encode(payload, JWT_SECRET, algorithm="HS256")
-    return {"token": token, "user": {"email": payload["sub"], "nombre": u["nombre"], "rol": u["rol"]}}
-
-# ── Mapeos hacia el contrato del dashboard ───────────────────────────────────
-REL = {"madre": "Madre", "padre": "Padre", "tutor": "Tutor", "abuelo": "Abuelo/a", "otro": "Tutor"}
-ESTADO_CUENTA = {"active": "activa", "inactive": "suspendida", "suspended": "suspendida", "deleted": "baja"}
-PAGO_ESTADO = {"confirmed": "confirmado", "pending": "pendiente", "failed": "fallido", "refunded": "reembolsado"}
-PAGO_METODO = {"tilopay": "Yappy", "yappy": "Yappy", "stripe": "Stripe"}
-TRIAGE_COLOR = {
-    "general": "hsl(var(--triage-self))",
-    "urgente": "hsl(var(--triage-priority))",
-    "emergencia": "hsl(var(--triage-emergency))",
-}
-MSG_ROL = {"user": "acudiente", "guardian": "acudiente", "assistant": "bot", "bot": "bot", "system": "sistema"}
+    return {"token": token, "user": {"email": payload["sub"], "name": u["name"], "role": u["role"]}}
 
 
-def _pais(phone: str | None) -> str:
-    p = (phone or "").lstrip("+")
-    if p.startswith("507"):
-        return "Panamá"
-    if p.startswith("57"):
-        return "Colombia"
-    return "Panamá"
-
-
-def _edad_anios(bday) -> int:
-    if not bday:
-        return 0
-    if isinstance(bday, str):
-        try:
-            bday = date.fromisoformat(bday[:10])
-        except ValueError:
-            return 0
-    today = date.today()
-    return today.year - bday.year - ((today.month, today.day) < (bday.month, bday.day))
-
-
-def _plan_label(cycle: str | None) -> str:
-    if cycle == "annual":
-        return "Premium Anual"
-    if cycle == "monthly":
-        return "Premium Mensual"
-    return "Gratuito"
-
-
-# ── Salud ────────────────────────────────────────────────────────────────────
 @app.get("/health")
 def health():
     try:
@@ -212,11 +148,11 @@ def health():
         raise HTTPException(status_code=503, detail=f"db: {e}")
 
 
-# ── Documentación (sirve docs/index.html en la raíz) ─────────────────────────
+# ── Docs at root ─────────────────────────────────────────────────────────────
 try:
     _DOCS = (Path(__file__).parent / "docs" / "index.html").read_text(encoding="utf-8")
 except Exception:  # noqa: BLE001
-    _DOCS = "<h1>Lucera Metrics API</h1><p>Ver <a href='/docs'>/docs</a>.</p>"
+    _DOCS = "<h1>Lucera Metrics API</h1><p>See <a href='/docs'>/docs</a>.</p>"
 
 
 @app.get("/", response_class=HTMLResponse, include_in_schema=False)
@@ -229,106 +165,107 @@ def home() -> str:
     )
 
 
-# ── Acudientes (guardians + users + hijos) ───────────────────────────────────
-@app.get("/api/acudientes", dependencies=[Depends(require_auth)])
-def acudientes() -> list[dict]:
+# ── Value mappings → English ─────────────────────────────────────────────────
+RELATIONSHIP = {"madre": "mother", "padre": "father", "tutor": "guardian", "abuelo": "grandparent", "otro": "guardian"}
+GUARDIAN_STATUS = {"active": "active", "inactive": "suspended", "suspended": "suspended", "deleted": "inactive"}
+PATIENT_STATUS = {"active": "active", "inactive": "suspended", "suspended": "suspended"}
+TRIAGE = {"general": "general", "urgente": "urgent", "emergencia": "emergency"}
+PAY_METHOD = {"tilopay": "yappy", "yappy": "yappy", "stripe": "stripe"}
+PAY_STATUS = {"confirmed": "confirmed", "pending": "pending", "failed": "failed", "refunded": "refunded"}
+MSG_ROLE = {"user": "guardian", "guardian": "guardian", "assistant": "bot", "bot": "bot", "system": "system"}
+TRIAGE_COLOR = {"general": "hsl(var(--triage-self))", "urgent": "hsl(var(--triage-priority))", "emergency": "hsl(var(--triage-emergency))"}
+
+
+def _country(phone: str | None) -> str:
+    p = (phone or "").lstrip("+")
+    return "Panama" if p.startswith("507") else ("Colombia" if p.startswith("57") else "Panama")
+
+
+def _age_years(bday) -> int:
+    if not bday:
+        return 0
+    if isinstance(bday, str):
+        try:
+            bday = date.fromisoformat(bday[:10])
+        except ValueError:
+            return 0
+    t = date.today()
+    return t.year - bday.year - ((t.month, t.day) < (bday.month, bday.day))
+
+
+def _plan(cycle: str | None) -> str:
+    return {"annual": "premium_annual", "monthly": "premium_monthly"}.get(cycle, "free")
+
+
+# ── Guardians ────────────────────────────────────────────────────────────────
+@app.get("/api/guardians", dependencies=[Depends(require_auth)])
+def guardians() -> list[dict]:
     gs = _q(
         """
-        SELECT g.id, g.full_name AS nombre, g.relationship_type AS rel, g.city AS ciudad,
-               g.province, u.phone_number AS telefono, u.email, u.status AS ustatus, u.created_at,
-               (SELECT p.billing_cycle FROM payments p
-                 WHERE p.user_id=u.id AND p.status='confirmed'
+        SELECT g.id, g.full_name AS name, g.relationship_type AS rel, g.city, g.province,
+               u.phone_number AS phone, u.email, u.status AS ustatus, u.created_at,
+               (SELECT p.billing_cycle FROM payments p WHERE p.user_id=u.id AND p.status='confirmed'
                  ORDER BY p.confirmed_at DESC LIMIT 1) AS cycle
-        FROM guardians g JOIN users u ON u.id=g.user_id
-        ORDER BY g.full_name
+        FROM guardians g JOIN users u ON u.id=g.user_id ORDER BY g.full_name
         """
     )
     deps = _q(
         """
-        SELECT gd.guardian_id, d.id, d.full_name AS nombre, d.birthday AS fechaNacimiento,
-               d.blood_type AS tipoSangre, d.weight_kg AS pesoKg,
+        SELECT gd.guardian_id, d.id, d.full_name AS name, d.birthday, d.blood_type, d.weight_kg,
                d.known_conditions, d.allergies
         FROM dependents d JOIN guardian_dependent gd ON gd.dependent_id=d.id
         """
     )
     by_g: dict = {}
     for d in deps:
-        by_g.setdefault(d["guardian_id"], []).append(
-            {
-                "id": d["id"],
-                "nombre": d["nombre"],
-                "fechaNacimiento": _clean(d["fechaNacimiento"]),
-                "tipoSangre": d["tipoSangre"] or None,
-                "pesoKg": float(d["pesoKg"]) if d["pesoKg"] is not None else None,
-                "condiciones": [d["known_conditions"]] if d["known_conditions"] else [],
-                "alergias": [d["allergies"]] if d["allergies"] else [],
-            }
-        )
-    out = []
-    for g in gs:
-        out.append(
-            {
-                "id": g["id"],
-                "telefono": g["telefono"],
-                "email": g["email"],
-                "nombre": g["nombre"],
-                "relacion": REL.get(g["rel"], "Tutor"),
-                "pais": _pais(g["telefono"]),
-                "ciudad": g["ciudad"] or g["province"] or "",
-                "estado": ESTADO_CUENTA.get(g["ustatus"], "activa"),
-                "plan": _plan_label(g["cycle"]),
-                "registrado": _clean(g["created_at"]),
-                "ninos": by_g.get(g["id"], []),
-            }
-        )
-    return out
+        by_g.setdefault(d["guardian_id"], []).append({
+            "id": d["id"], "name": d["name"], "birthDate": _clean(d["birthday"]),
+            "bloodType": d["blood_type"] or None,
+            "weightKg": float(d["weight_kg"]) if d["weight_kg"] is not None else None,
+            "conditions": [d["known_conditions"]] if d["known_conditions"] else [],
+            "allergies": [d["allergies"]] if d["allergies"] else [],
+        })
+    return [{
+        "id": g["id"], "phone": g["phone"], "email": g["email"], "name": g["name"],
+        "relationship": RELATIONSHIP.get(g["rel"], "guardian"),
+        "country": _country(g["phone"]), "city": g["city"] or g["province"] or "",
+        "status": GUARDIAN_STATUS.get(g["ustatus"], "active"), "plan": _plan(g["cycle"]),
+        "registeredAt": _clean(g["created_at"]), "children": by_g.get(g["id"], []),
+    } for g in gs]
 
 
-# ── Pacientes (niños aplanados) ──────────────────────────────────────────────
-@app.get("/api/pacientes", dependencies=[Depends(require_auth)])
-def pacientes() -> list[dict]:
+# ── Patients ─────────────────────────────────────────────────────────────────
+@app.get("/api/patients", dependencies=[Depends(require_auth)])
+def patients() -> list[dict]:
     rows = _q(
         """
-        SELECT d.id, d.full_name AS nombre, d.birthday, d.css_number AS cedula,
-               g.full_name AS tutor, u.phone_number AS telefono, u.status AS ustatus,
-               (SELECT MAX(cs.opened_at) FROM chat_sessions cs WHERE cs.dependent_id=d.id) AS ultima
-        FROM dependents d
-        JOIN guardian_dependent gd ON gd.dependent_id=d.id
-        JOIN guardians g ON g.id=gd.guardian_id
-        JOIN users u ON u.id=g.user_id
-        ORDER BY d.full_name
+        SELECT d.id, d.full_name AS name, d.birthday, d.css_number AS national_id,
+               g.full_name AS guardian, u.phone_number AS phone, u.status AS ustatus,
+               (SELECT MAX(cs.opened_at) FROM chat_sessions cs WHERE cs.dependent_id=d.id) AS last
+        FROM dependents d JOIN guardian_dependent gd ON gd.dependent_id=d.id
+        JOIN guardians g ON g.id=gd.guardian_id JOIN users u ON u.id=g.user_id ORDER BY d.full_name
         """
     )
-    est = {"active": "activo", "inactive": "suspendido", "suspended": "suspendido"}
-    return [
-        {
-            "id": r["id"],
-            "nombre": r["nombre"],
-            "cedula": r["cedula"] or "",
-            "edad": _edad_anios(r["birthday"]),
-            "tutor": r["tutor"],
-            "telefono": r["telefono"],
-            "estado": est.get(r["ustatus"], "pendiente"),
-            "ultimaConsulta": _clean(r["ultima"]) if r["ultima"] else "",
-        }
-        for r in rows
-    ]
+    return [{
+        "id": r["id"], "name": r["name"], "nationalId": r["national_id"] or "",
+        "age": _age_years(r["birthday"]), "guardian": r["guardian"], "phone": r["phone"],
+        "status": PATIENT_STATUS.get(r["ustatus"], "pending"),
+        "lastConsultation": _clean(r["last"]) if r["last"] else "",
+    } for r in rows]
 
 
-# ── Chats (sesiones + mensajes) ──────────────────────────────────────────────
+# ── Chats ────────────────────────────────────────────────────────────────────
 @app.get("/api/chats", dependencies=[Depends(require_auth)])
 def chats() -> list[dict]:
     ses = _q(
         """
-        SELECT cs.id, g.full_name AS acudiente, d.full_name AS paciente,
-               u.phone_number AS telefono, cl.name AS triaje, cs.appointment_type,
-               cs.summary AS resumenIA, cs.feedback_score AS calificacion,
-               cs.status, cs.fsm_state, cs.opened_at AS inicio, cs.closed_at AS cierre,
-               (SELECT content FROM messages m WHERE m.session_id=cs.id ORDER BY m.created_at DESC LIMIT 1) AS ultimoMensaje,
-               (SELECT created_at FROM messages m WHERE m.session_id=cs.id ORDER BY m.created_at DESC LIMIT 1) AS hora
-        FROM chat_sessions cs
-        JOIN guardians g ON g.id=cs.guardian_id
-        JOIN users u ON u.id=g.user_id
+        SELECT cs.id, g.full_name AS guardian, d.full_name AS patient, u.phone_number AS phone,
+               cl.name AS triage, cs.appointment_type, cs.summary AS ai_summary,
+               cs.feedback_score AS rating, cs.status, cs.fsm_state, cs.opened_at AS started_at,
+               cs.closed_at AS closed_at,
+               (SELECT content FROM messages m WHERE m.session_id=cs.id ORDER BY m.created_at DESC LIMIT 1) AS last_message,
+               (SELECT created_at FROM messages m WHERE m.session_id=cs.id ORDER BY m.created_at DESC LIMIT 1) AS time
+        FROM chat_sessions cs JOIN guardians g ON g.id=cs.guardian_id JOIN users u ON u.id=g.user_id
         LEFT JOIN dependents d ON d.id=cs.dependent_id
         LEFT JOIN classification cl ON cl.id=cs.classification_id
         ORDER BY cs.opened_at DESC
@@ -345,245 +282,173 @@ def chats() -> list[dict]:
     )
     by_s: dict = {}
     for m in msgs:
-        by_s.setdefault(m["session_id"], []).append(
-            {
-                "rol": MSG_ROL.get(m["sender_role"], "sistema"),
-                "texto": m["content"],
-                "hora": _clean(m["created_at"]),
-                "tipo": (m["content_type"] or "texto"),
-                "alertas": (m["flags"].split(",") if m["flags"] else []),
-            }
-        )
+        by_s.setdefault(m["session_id"], []).append({
+            "role": MSG_ROLE.get(m["sender_role"], "system"), "text": m["content"],
+            "time": _clean(m["created_at"]), "type": (m["content_type"] or "text"),
+            "alerts": (m["flags"].split(",") if m["flags"] else []),
+        })
 
-    def _estado(s):
+    def _status(s):
         if s["status"] == "closed":
-            return "cerrada"
+            return "closed"
         if s["fsm_state"] == "awaiting_user":
-            return "esperando"
-        return "activa"
+            return "waiting"
+        return "active"
 
-    out = []
-    for s in ses:
-        out.append(
-            {
-                "id": s["id"],
-                "acudiente": s["acudiente"],
-                "paciente": s["paciente"] or "",
-                "telefono": s["telefono"],
-                "triaje": s["triaje"] if s["triaje"] in ("general", "urgente", "emergencia") else "general",
-                "tipoAtencion": "Presencial" if (s["appointment_type"] or "").lower().startswith("pres") else "Virtual",
-                "resumenIA": s["resumenIA"] or None,
-                "calificacion": int(s["calificacion"]) if s["calificacion"] is not None else None,
-                "ultimoMensaje": (s["ultimoMensaje"] or "")[:200],
-                "hora": _clean(s["hora"]) if s["hora"] else "",
-                "inicio": _clean(s["inicio"]) if s["inicio"] else "",
-                "cierre": _clean(s["cierre"]) if s["cierre"] else None,
-                "mensajes": by_s.get(s["id"], []),
-                "estado": _estado(s),
-            }
-        )
-    return out
+    return [{
+        "id": s["id"], "guardian": s["guardian"], "patient": s["patient"] or "", "phone": s["phone"],
+        "triage": TRIAGE.get(s["triage"], "general"),
+        "attentionType": "in_person" if (s["appointment_type"] or "").lower().startswith("pres") else "virtual",
+        "aiSummary": s["ai_summary"] or None,
+        "rating": int(s["rating"]) if s["rating"] is not None else None,
+        "lastMessage": (s["last_message"] or "")[:200], "time": _clean(s["time"]) if s["time"] else "",
+        "startedAt": _clean(s["started_at"]) if s["started_at"] else "",
+        "closedAt": _clean(s["closed_at"]) if s["closed_at"] else None,
+        "messages": by_s.get(s["id"], []), "status": _status(s),
+    } for s in ses]
 
 
-# ── Pagos ────────────────────────────────────────────────────────────────────
-@app.get("/api/pagos", dependencies=[Depends(require_auth)])
-def pagos() -> list[dict]:
+# ── Payments ─────────────────────────────────────────────────────────────────
+@app.get("/api/payments", dependencies=[Depends(require_auth)])
+def payments() -> list[dict]:
     rows = _q(
         """
-        SELECT p.id, p.provider_txn_id, g.full_name AS acudiente, p.amount_usd AS monto,
+        SELECT p.id, p.provider_txn_id, g.full_name AS guardian, p.amount_usd AS amount,
                p.provider, p.billing_cycle, p.status, p.created_at, p.confirmed_at
-        FROM payments p
-        JOIN users u ON u.id=p.user_id
-        LEFT JOIN guardians g ON g.user_id=u.id
+        FROM payments p JOIN users u ON u.id=p.user_id LEFT JOIN guardians g ON g.user_id=u.id
         ORDER BY p.created_at DESC
         """
     )
-    return [
-        {
-            "id": r["provider_txn_id"] or r["id"],
-            "acudiente": r["acudiente"] or "",
-            "monto": float(r["monto"]) if r["monto"] is not None else 0,
-            "metodo": PAGO_METODO.get(r["provider"], "Yappy"),
-            "plan": _plan_label(r["billing_cycle"]),
-            "estado": PAGO_ESTADO.get(r["status"], "pendiente"),
-            "fecha": _clean(r["confirmed_at"] or r["created_at"]),
-            "respuestaProveedor": r["status"],
-            "tipoPago": "Crédito",
-        }
-        for r in rows
-    ]
+    return [{
+        "id": r["provider_txn_id"] or r["id"], "guardian": r["guardian"] or "",
+        "amount": float(r["amount"]) if r["amount"] is not None else 0,
+        "method": PAY_METHOD.get(r["provider"], "yappy"), "plan": _plan(r["billing_cycle"]),
+        "status": PAY_STATUS.get(r["status"], "pending"),
+        "date": _clean(r["confirmed_at"] or r["created_at"]),
+        "providerResponse": r["status"], "paymentType": "credit",
+    } for r in rows]
 
 
-# ── Centros de salud (hospitales) ────────────────────────────────────────────
-@app.get("/api/centros", dependencies=[Depends(require_auth)])
-def centros() -> list[dict]:
+# ── Health centers ───────────────────────────────────────────────────────────
+@app.get("/api/centers", dependencies=[Depends(require_auth)])
+def centers() -> list[dict]:
     rows = _q(
-        "SELECT id, name AS nombre, city AS ciudad, address AS direccion, phone AS telefono, "
-        "recommended AS recomendado FROM hospitals WHERE active=1 OR active IS NULL ORDER BY name"
+        "SELECT id, name, city, address, phone, recommended FROM hospitals "
+        "WHERE active=1 OR active IS NULL ORDER BY name"
     )
     out = []
     for r in rows:
-        nm = (r["nombre"] or "").lower()
-        tipo = "Clínica" if "clínic" in nm or "clinic" in nm else ("Urgencias" if "urgenc" in nm else "Hospital")
-        out.append(
-            {
-                "id": r["id"],
-                "nombre": r["nombre"],
-                "tipo": tipo,
-                "ciudad": r["ciudad"] or "",
-                "direccion": r["direccion"] or "",
-                "telefono": r["telefono"] or "",
-                "horarios": "24/7",
-                "recomendado": bool(r["recomendado"]),
-            }
-        )
+        nm = (r["name"] or "").lower()
+        typ = "Clinic" if ("clínic" in nm or "clinic" in nm) else ("Emergency" if "urgenc" in nm else "Hospital")
+        out.append({
+            "id": r["id"], "name": r["name"], "type": typ, "city": r["city"] or "",
+            "address": r["address"] or "", "phone": r["phone"] or "", "hours": "24/7",
+            "recommended": bool(r["recommended"]),
+        })
     return out
 
 
-# ── Catálogos ────────────────────────────────────────────────────────────────
-@app.get("/api/seguros", dependencies=[Depends(require_auth)])
-def seguros() -> list[dict]:
-    rows = _q("SELECT id, name FROM insurance_companies ORDER BY name")
-    return [{"id": r["id"], "nombre": r["name"]} for r in rows]
+# ── Catalogs ─────────────────────────────────────────────────────────────────
+@app.get("/api/insurances", dependencies=[Depends(require_auth)])
+def insurances() -> list[dict]:
+    return [{"id": r["id"], "name": r["name"]} for r in _q("SELECT id, name FROM insurance_companies ORDER BY name")]
 
 
-@app.get("/api/especialidades", dependencies=[Depends(require_auth)])
-def especialidades() -> list[str]:
-    rows = _q("SELECT name FROM specialties ORDER BY name")
-    return [r["name"] for r in rows]
+@app.get("/api/specialties", dependencies=[Depends(require_auth)])
+def specialties() -> list[str]:
+    return [r["name"] for r in _q("SELECT name FROM specialties ORDER BY name")]
 
 
-# ── Estadísticas ─────────────────────────────────────────────────────────────
+# ── Statistics ───────────────────────────────────────────────────────────────
 @app.get("/api/stats/kpis", dependencies=[Depends(require_auth)])
 def kpis() -> dict:
-    ac = _q("SELECT COUNT(*) c FROM users WHERE status='active'")[0]["c"]
-    ni = _q("SELECT COUNT(*) c FROM dependents")[0]["c"]
+    active = _q("SELECT COUNT(*) c FROM users WHERE status='active'")[0]["c"]
+    children = _q("SELECT COUNT(*) c FROM dependents")[0]["c"]
     sm = _q("SELECT COUNT(*) c FROM chat_sessions WHERE opened_at >= DATE_FORMAT(NOW(),'%Y-%m-01')")[0]["c"]
-    pagos = _q("SELECT COUNT(DISTINCT user_id) c FROM payments WHERE status='confirmed'")[0]["c"]
-    total_u = _q("SELECT COUNT(*) c FROM users")[0]["c"] or 1
-    csat_row = _q("SELECT AVG(feedback_score) a, COUNT(feedback_score) n FROM chat_sessions")[0]
+    paid = _q("SELECT COUNT(DISTINCT user_id) c FROM payments WHERE status='confirmed'")[0]["c"]
+    total = _q("SELECT COUNT(*) c FROM users")[0]["c"] or 1
+    csat = _q("SELECT AVG(feedback_score) a FROM chat_sessions")[0]["a"]
     emg = _q("SELECT COUNT(*) c FROM chat_sessions cs JOIN classification cl ON cl.id=cs.classification_id WHERE cl.name='emergencia'")[0]["c"]
-    deriv = _q("SELECT COUNT(*) c FROM chat_sessions WHERE hospital_id IS NOT NULL OR appointment_type='presencial'")[0]["c"]
-    ing = _q("SELECT COALESCE(SUM(amount_usd),0) s FROM payments WHERE status='confirmed' AND confirmed_at >= DATE_FORMAT(NOW(),'%Y-%m-01')")[0]["s"]
-    csat_pct = round(float(csat_row["a"]) / 5 * 100) if csat_row["a"] else 0
+    ref = _q("SELECT COUNT(*) c FROM chat_sessions WHERE hospital_id IS NOT NULL OR appointment_type='presencial'")[0]["c"]
+    rev = _q("SELECT COALESCE(SUM(amount_usd),0) s FROM payments WHERE status='confirmed' AND confirmed_at >= DATE_FORMAT(NOW(),'%Y-%m-01')")[0]["s"]
     return {
-        "acudientesActivos": ac,
-        "ninosRegistrados": ni,
-        "sesionesMes": sm,
-        "conversionPremium": round(pagos / total_u * 100, 1),
-        "csat": csat_pct,
-        "emergenciasDetectadas": emg,
-        "derivacionesPresenciales": deriv,
-        "ingresosMes": float(ing),
+        "activeGuardians": active, "registeredChildren": children, "sessionsThisMonth": sm,
+        "premiumConversion": round(paid / total * 100, 1),
+        "csat": round(float(csat) / 5 * 100) if csat else 0,
+        "emergenciesDetected": emg, "inPersonReferrals": ref, "revenueThisMonth": float(rev),
     }
 
 
-_MES_ES = ["Ene", "Feb", "Mar", "Abr", "May", "Jun", "Jul", "Ago", "Sep", "Oct", "Nov", "Dic"]
+_MONTHS = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"]
 
 
-@app.get("/api/stats/sesiones-por-mes", dependencies=[Depends(require_auth)])
-def sesiones_por_mes() -> list[dict]:
-    rows = _q(
-        """
-        SELECT YEAR(opened_at) y, MONTH(opened_at) m, COUNT(*) sesiones
-        FROM chat_sessions WHERE opened_at IS NOT NULL
-        GROUP BY YEAR(opened_at), MONTH(opened_at) ORDER BY y, m
-        """
-    )
-    prem = _q(
-        """
-        SELECT YEAR(confirmed_at) y, MONTH(confirmed_at) m, COUNT(*) premium
-        FROM payments WHERE status='confirmed' AND confirmed_at IS NOT NULL
-        GROUP BY YEAR(confirmed_at), MONTH(confirmed_at)
-        """
-    )
+@app.get("/api/stats/sessions-per-month", dependencies=[Depends(require_auth)])
+def sessions_per_month() -> list[dict]:
+    rows = _q("SELECT YEAR(opened_at) y, MONTH(opened_at) m, COUNT(*) sessions FROM chat_sessions "
+              "WHERE opened_at IS NOT NULL GROUP BY YEAR(opened_at), MONTH(opened_at) ORDER BY y, m")
+    prem = _q("SELECT YEAR(confirmed_at) y, MONTH(confirmed_at) m, COUNT(*) premium FROM payments "
+              "WHERE status='confirmed' AND confirmed_at IS NOT NULL GROUP BY YEAR(confirmed_at), MONTH(confirmed_at)")
     pmap = {(p["y"], p["m"]): p["premium"] for p in prem}
-    return [
-        {"mes": _MES_ES[r["m"] - 1], "sesiones": r["sesiones"], "premium": pmap.get((r["y"], r["m"]), 0)}
-        for r in rows
-    ]
+    return [{"month": _MONTHS[r["m"] - 1], "sessions": r["sessions"], "premium": pmap.get((r["y"], r["m"]), 0)} for r in rows]
 
 
-@app.get("/api/stats/triaje", dependencies=[Depends(require_auth)])
-def stats_triaje() -> list[dict]:
-    rows = _q(
-        """
-        SELECT cl.name, COUNT(*) value FROM chat_sessions cs
-        JOIN classification cl ON cl.id=cs.classification_id GROUP BY cl.name
-        """
-    )
+@app.get("/api/stats/triage", dependencies=[Depends(require_auth)])
+def stats_triage() -> list[dict]:
+    rows = _q("SELECT cl.name, COUNT(*) value FROM chat_sessions cs JOIN classification cl ON cl.id=cs.classification_id GROUP BY cl.name")
     order = {"general": 0, "urgente": 1, "emergencia": 2}
     rows.sort(key=lambda r: order.get(r["name"], 9))
-    return [
-        {"nivel": r["name"].capitalize(), "value": r["value"], "color": TRIAGE_COLOR.get(r["name"], "")}
-        for r in rows
-    ]
+    return [{"level": TRIAGE.get(r["name"], r["name"]).capitalize(), "value": r["value"],
+             "color": TRIAGE_COLOR.get(TRIAGE.get(r["name"], ""), "")} for r in rows]
 
 
-@app.get("/api/stats/planes", dependencies=[Depends(require_auth)])
-def stats_planes() -> list[dict]:
-    rows = _q(
-        """
-        SELECT COALESCE(
-                 (SELECT p.billing_cycle FROM payments p
-                   WHERE p.user_id=u.id AND p.status='confirmed'
-                   ORDER BY p.confirmed_at DESC LIMIT 1), 'free') AS cycle,
-               COUNT(*) c
-        FROM users u GROUP BY cycle
-        """
-    )
-    colors = {"Gratuito": "hsl(var(--triage-self))", "Premium Mensual": "hsl(var(--accent))", "Premium Anual": "hsl(var(--primary))"}
+@app.get("/api/stats/plans", dependencies=[Depends(require_auth)])
+def stats_plans() -> list[dict]:
+    rows = _q("SELECT COALESCE((SELECT p.billing_cycle FROM payments p WHERE p.user_id=u.id AND p.status='confirmed' "
+              "ORDER BY p.confirmed_at DESC LIMIT 1),'free') AS cycle, COUNT(*) c FROM users u GROUP BY cycle")
+    colors = {"free": "hsl(var(--triage-self))", "premium_monthly": "hsl(var(--accent))", "premium_annual": "hsl(var(--primary))"}
     agg: dict = {}
     for r in rows:
-        agg[_plan_label(r["cycle"])] = agg.get(_plan_label(r["cycle"]), 0) + r["c"]
-    return [{"plan": k, "usuarios": v, "color": colors.get(k, "")} for k, v in agg.items()]
+        agg[_plan(r["cycle"])] = agg.get(_plan(r["cycle"]), 0) + r["c"]
+    return [{"plan": k, "users": v, "color": colors.get(k, "")} for k, v in agg.items()]
 
 
-@app.get("/api/stats/tipo-atencion", dependencies=[Depends(require_auth)])
-def stats_tipo_atencion() -> list[dict]:
+@app.get("/api/stats/attention-type", dependencies=[Depends(require_auth)])
+def stats_attention_type() -> list[dict]:
     pres = _q("SELECT COUNT(*) c FROM chat_sessions WHERE hospital_id IS NOT NULL OR appointment_type='presencial'")[0]["c"]
     tot = _q("SELECT COUNT(*) c FROM chat_sessions")[0]["c"]
-    return [
-        {"tipo": "Virtual (cerrada en chat)", "value": tot - pres},
-        {"tipo": "Derivada a presencial", "value": pres},
-    ]
+    return [{"type": "virtual", "value": tot - pres}, {"type": "in_person", "value": pres}]
 
 
 @app.get("/api/stats/csat", dependencies=[Depends(require_auth)])
 def stats_csat() -> list[dict]:
-    rows = _q(
-        """
-        SELECT YEARWEEK(closed_at) yw, ROUND(AVG(feedback_score)/5*100) csat
-        FROM chat_sessions WHERE feedback_score IS NOT NULL AND closed_at IS NOT NULL
-        GROUP BY YEARWEEK(closed_at) ORDER BY yw
-        """
-    )
-    return [{"semana": f"S{i + 1}", "csat": int(r["csat"])} for i, r in enumerate(rows)]
+    rows = _q("SELECT YEARWEEK(closed_at) yw, ROUND(AVG(feedback_score)/5*100) csat FROM chat_sessions "
+              "WHERE feedback_score IS NOT NULL AND closed_at IS NOT NULL GROUP BY YEARWEEK(closed_at) ORDER BY yw")
+    return [{"week": f"W{i + 1}", "csat": int(r["csat"])} for i, r in enumerate(rows)]
 
 
-# ── Secciones sin datos aún (funcionalidad futura) → arreglos vacíos ─────────
-@app.get("/api/medicos", dependencies=[Depends(require_auth)])
-def medicos() -> list[dict]:
+# ── Future sections (empty until the product has the data) ───────────────────
+@app.get("/api/doctors", dependencies=[Depends(require_auth)])
+def doctors() -> list[dict]:
     return []
 
 
-@app.get("/api/especialistas", dependencies=[Depends(require_auth)])
-def especialistas() -> list[dict]:
+@app.get("/api/specialists", dependencies=[Depends(require_auth)])
+def specialists() -> list[dict]:
     return []
 
 
-@app.get("/api/medicamentos", dependencies=[Depends(require_auth)])
-def medicamentos() -> list[dict]:
+@app.get("/api/medications", dependencies=[Depends(require_auth)])
+def medications() -> list[dict]:
     return []
 
 
-@app.get("/api/disponibilidad", dependencies=[Depends(require_auth)])
-def disponibilidad() -> list[dict]:
+@app.get("/api/availability", dependencies=[Depends(require_auth)])
+def availability() -> list[dict]:
     return []
 
 
-@app.get("/api/citas", dependencies=[Depends(require_auth)])
-def citas() -> list[dict]:
+@app.get("/api/appointments", dependencies=[Depends(require_auth)])
+def appointments() -> list[dict]:
     return []
 
 
