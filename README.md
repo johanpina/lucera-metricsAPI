@@ -4,15 +4,31 @@ API de métricas (solo lectura) que alimenta el **dashboard del cliente** (repo 
 `MauricioSantos12/lucera-dashboard`). Lee la BD de Aiven y devuelve los datos en la
 **forma exacta** que espera el dashboard (ver `src/lib/mockData.ts`).
 
-## Auth
-Todas las rutas `/api/*` requieren el header **`X-API-Key: <METRICS_API_KEY>`**.
-`/health` es público.
+## Auth (JWT)
+El dashboard hace **login** contra este servicio y obtiene un **JWT**; luego manda ese
+token en cada request. La PII solo se sirve a usuarios autenticados.
+
+1. `POST /auth/login`  →  body `{"email","password"}`  →  `{"token","user":{email,nombre,rol}}`
+2. En cada `GET /api/*`  →  header `Authorization: Bearer <token>`
+
+`/health` y `/auth/login` son públicos; todo `/api/*` exige el Bearer (o, opcionalmente,
+un `X-API-Key` para scripts server-to-server). El token expira (`JWT_TTL_HOURS`, def. 12h).
+
+**Usuarios:** por defecto hay cuentas demo (`admin@lucera.pa`, `ventas@lucera.pa`,
+`esanchez@lucera.pa`) con la contraseña de `METRICS_DEMO_PASSWORD`. Para cuentas reales,
+setear `METRICS_USERS` (JSON: `[{"email","nombre","rol","password"}]`).
+
+### Integración en el dashboard de Mauro
+Su `lib/auth.tsx` hoy es mock (`login(user)` local). Cambiarlo para que `Login.tsx` haga
+`POST /auth/login`, guarde el `token` (localStorage) y lo mande como `Authorization: Bearer`
+en los `fetch` a `/api/*`. El `rol` viene en la respuesta para el control de vistas.
 
 ## Endpoints
 
 | Método · Ruta | Devuelve (tipo del dashboard) | Fuente |
 |---|---|---|
-| `GET /health` | `{ok:true}` | — |
+| `GET /health` | `{ok:true}` | — (público) |
+| `POST /auth/login` | `{token, user}` | usuarios (env/demo) — público |
 | `GET /api/acudientes` | `Acudiente[]` (con `ninos: NinoPaciente[]`) | guardians+users+dependents |
 | `GET /api/pacientes` | `Paciente[]` | dependents+sesiones |
 | `GET /api/chats` | `ChatSesion[]` (con `mensajes[]`) | chat_sessions+messages+flags+classification |

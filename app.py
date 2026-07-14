@@ -8,13 +8,18 @@ auditoría) devuelven arreglos vacíos para no romper la UI.
 
 from __future__ import annotations
 
+import hmac
+import json
 import os
+import time
 from datetime import date, datetime
 from decimal import Decimal
 
+import jwt
 import pymysql
 from fastapi import Depends, FastAPI, Header, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
+from pydantic import BaseModel
 
 # ── Conexión a Aiven (read-only) ─────────────────────────────────────────────
 DB = dict(
@@ -39,7 +44,33 @@ if os.environ.get("MYSQL_SSL", "").lower() in ("1", "true", "yes"):
         _ctx.verify_mode = _ssl.CERT_NONE
     DB["ssl"] = _ctx
 
-API_KEY = os.environ.get("METRICS_API_KEY", "")
+# ── Auth (JWT del dashboard + API key opcional para server-to-server) ────────
+JWT_SECRET = os.environ.get("JWT_SECRET", "lucera-metrics-dev-secret-CHANGE-ME")
+JWT_TTL = int(os.environ.get("JWT_TTL_HOURS", "12")) * 3600
+API_KEY = os.environ.get("METRICS_API_KEY", "")  # opcional (scripts / server-to-server)
+
+
+def _load_users() -> dict:
+    """Usuarios del dashboard. METRICS_USERS (JSON) o cuentas demo por defecto.
+
+    Formato METRICS_USERS: [{"email","nombre","rol","password"}]  (o "pass_sha256").
+    """
+    raw = os.environ.get("METRICS_USERS", "").strip()
+    if raw:
+        try:
+            return {u["email"].lower(): u for u in json.loads(raw)}
+        except Exception:  # noqa: BLE001
+            pass
+    pwd = os.environ.get("METRICS_DEMO_PASSWORD", "Lucera2026!")
+    demo = [
+        {"email": "admin@lucera.pa", "nombre": "Admin Técnico", "rol": "Admin", "password": pwd},
+        {"email": "ventas@lucera.pa", "nombre": "Ventas", "rol": "Ventas", "password": pwd},
+        {"email": "esanchez@lucera.pa", "nombre": "Dra. Elena Sánchez", "rol": "Médico", "password": pwd},
+    ]
+    return {u["email"].lower(): u for u in demo}
+
+
+USERS = _load_users()
 
 
 def _q(sql: str, args: tuple = ()) -> list[dict]:
@@ -72,16 +103,60 @@ def _row(d: dict) -> dict:
 
 
 # ── Auth ─────────────────────────────────────────────────────────────────────
-def require_key(x_api_key: str | None = Header(default=None)):
-    # Si METRICS_API_KEY no está seteada, no exige key (útil en local).
-    if API_KEY and x_api_key != API_KEY:
-        raise HTTPException(status_code=401, detail="API key inválida o ausente (header X-API-Key).")
+def _check_password(user: dict, password: str) -> bool:
+    if "pass_sha256" in user:
+        import hashlib
+
+        h = hashlib.sha256(password.encode()).hexdigest()
+        return hmac.compare_digest(h, str(user["pass_sha256"]))
+    return hmac.compare_digest(str(user.get("password", "")), password)
+
+
+def require_auth(
+    authorization: str | None = Header(default=None),
+    x_api_key: str | None = Header(default=None),
+) -> dict:
+    """Exige JWT válido (Bearer) del dashboard, o la API key (server-to-server)."""
+    if API_KEY and x_api_key and hmac.compare_digest(x_api_key, API_KEY):
+        return {"sub": "apikey", "rol": "Admin"}
+    if authorization and authorization.lower().startswith("bearer "):
+        token = authorization.split(" ", 1)[1].strip()
+        try:
+            return jwt.decode(token, JWT_SECRET, algorithms=["HS256"])
+        except jwt.ExpiredSignatureError:
+            raise HTTPException(status_code=401, detail="Token expirado. Vuelve a iniciar sesión.")
+        except Exception:  # noqa: BLE001
+            raise HTTPException(status_code=401, detail="Token inválido.")
+    raise HTTPException(status_code=401, detail="No autenticado (envía Bearer <jwt> o X-API-Key).")
+
+
+class LoginIn(BaseModel):
+    email: str
+    password: str
 
 
 app = FastAPI(title="Lucera Metrics API", version="1.0")
 app.add_middleware(
-    CORSMiddleware, allow_origins=["*"], allow_methods=["GET"], allow_headers=["*"]
+    CORSMiddleware, allow_origins=["*"], allow_methods=["GET", "POST"], allow_headers=["*"]
 )
+
+
+@app.post("/auth/login")
+def login(body: LoginIn) -> dict:
+    """Login del dashboard. Devuelve un JWT (Bearer) para las rutas /api/*."""
+    u = USERS.get((body.email or "").lower().strip())
+    if u is None or not _check_password(u, body.password or ""):
+        raise HTTPException(status_code=401, detail="Correo o contraseña incorrectos.")
+    now = int(time.time())
+    payload = {
+        "sub": body.email.lower().strip(),
+        "nombre": u["nombre"],
+        "rol": u["rol"],
+        "iat": now,
+        "exp": now + JWT_TTL,
+    }
+    token = jwt.encode(payload, JWT_SECRET, algorithm="HS256")
+    return {"token": token, "user": {"email": payload["sub"], "nombre": u["nombre"], "rol": u["rol"]}}
 
 # ── Mapeos hacia el contrato del dashboard ───────────────────────────────────
 REL = {"madre": "Madre", "padre": "Padre", "tutor": "Tutor", "abuelo": "Abuelo/a", "otro": "Tutor"}
@@ -136,7 +211,7 @@ def health():
 
 
 # ── Acudientes (guardians + users + hijos) ───────────────────────────────────
-@app.get("/api/acudientes", dependencies=[Depends(require_key)])
+@app.get("/api/acudientes", dependencies=[Depends(require_auth)])
 def acudientes() -> list[dict]:
     gs = _q(
         """
@@ -191,7 +266,7 @@ def acudientes() -> list[dict]:
 
 
 # ── Pacientes (niños aplanados) ──────────────────────────────────────────────
-@app.get("/api/pacientes", dependencies=[Depends(require_key)])
+@app.get("/api/pacientes", dependencies=[Depends(require_auth)])
 def pacientes() -> list[dict]:
     rows = _q(
         """
@@ -222,7 +297,7 @@ def pacientes() -> list[dict]:
 
 
 # ── Chats (sesiones + mensajes) ──────────────────────────────────────────────
-@app.get("/api/chats", dependencies=[Depends(require_key)])
+@app.get("/api/chats", dependencies=[Depends(require_auth)])
 def chats() -> list[dict]:
     ses = _q(
         """
@@ -292,7 +367,7 @@ def chats() -> list[dict]:
 
 
 # ── Pagos ────────────────────────────────────────────────────────────────────
-@app.get("/api/pagos", dependencies=[Depends(require_key)])
+@app.get("/api/pagos", dependencies=[Depends(require_auth)])
 def pagos() -> list[dict]:
     rows = _q(
         """
@@ -321,7 +396,7 @@ def pagos() -> list[dict]:
 
 
 # ── Centros de salud (hospitales) ────────────────────────────────────────────
-@app.get("/api/centros", dependencies=[Depends(require_key)])
+@app.get("/api/centros", dependencies=[Depends(require_auth)])
 def centros() -> list[dict]:
     rows = _q(
         "SELECT id, name AS nombre, city AS ciudad, address AS direccion, phone AS telefono, "
@@ -347,20 +422,20 @@ def centros() -> list[dict]:
 
 
 # ── Catálogos ────────────────────────────────────────────────────────────────
-@app.get("/api/seguros", dependencies=[Depends(require_key)])
+@app.get("/api/seguros", dependencies=[Depends(require_auth)])
 def seguros() -> list[dict]:
     rows = _q("SELECT id, name FROM insurance_companies ORDER BY name")
     return [{"id": r["id"], "nombre": r["name"]} for r in rows]
 
 
-@app.get("/api/especialidades", dependencies=[Depends(require_key)])
+@app.get("/api/especialidades", dependencies=[Depends(require_auth)])
 def especialidades() -> list[str]:
     rows = _q("SELECT name FROM specialties ORDER BY name")
     return [r["name"] for r in rows]
 
 
 # ── Estadísticas ─────────────────────────────────────────────────────────────
-@app.get("/api/stats/kpis", dependencies=[Depends(require_key)])
+@app.get("/api/stats/kpis", dependencies=[Depends(require_auth)])
 def kpis() -> dict:
     ac = _q("SELECT COUNT(*) c FROM users WHERE status='active'")[0]["c"]
     ni = _q("SELECT COUNT(*) c FROM dependents")[0]["c"]
@@ -387,7 +462,7 @@ def kpis() -> dict:
 _MES_ES = ["Ene", "Feb", "Mar", "Abr", "May", "Jun", "Jul", "Ago", "Sep", "Oct", "Nov", "Dic"]
 
 
-@app.get("/api/stats/sesiones-por-mes", dependencies=[Depends(require_key)])
+@app.get("/api/stats/sesiones-por-mes", dependencies=[Depends(require_auth)])
 def sesiones_por_mes() -> list[dict]:
     rows = _q(
         """
@@ -410,7 +485,7 @@ def sesiones_por_mes() -> list[dict]:
     ]
 
 
-@app.get("/api/stats/triaje", dependencies=[Depends(require_key)])
+@app.get("/api/stats/triaje", dependencies=[Depends(require_auth)])
 def stats_triaje() -> list[dict]:
     rows = _q(
         """
@@ -426,7 +501,7 @@ def stats_triaje() -> list[dict]:
     ]
 
 
-@app.get("/api/stats/planes", dependencies=[Depends(require_key)])
+@app.get("/api/stats/planes", dependencies=[Depends(require_auth)])
 def stats_planes() -> list[dict]:
     rows = _q(
         """
@@ -445,7 +520,7 @@ def stats_planes() -> list[dict]:
     return [{"plan": k, "usuarios": v, "color": colors.get(k, "")} for k, v in agg.items()]
 
 
-@app.get("/api/stats/tipo-atencion", dependencies=[Depends(require_key)])
+@app.get("/api/stats/tipo-atencion", dependencies=[Depends(require_auth)])
 def stats_tipo_atencion() -> list[dict]:
     pres = _q("SELECT COUNT(*) c FROM chat_sessions WHERE hospital_id IS NOT NULL OR appointment_type='presencial'")[0]["c"]
     tot = _q("SELECT COUNT(*) c FROM chat_sessions")[0]["c"]
@@ -455,7 +530,7 @@ def stats_tipo_atencion() -> list[dict]:
     ]
 
 
-@app.get("/api/stats/csat", dependencies=[Depends(require_key)])
+@app.get("/api/stats/csat", dependencies=[Depends(require_auth)])
 def stats_csat() -> list[dict]:
     rows = _q(
         """
@@ -468,31 +543,31 @@ def stats_csat() -> list[dict]:
 
 
 # ── Secciones sin datos aún (funcionalidad futura) → arreglos vacíos ─────────
-@app.get("/api/medicos", dependencies=[Depends(require_key)])
+@app.get("/api/medicos", dependencies=[Depends(require_auth)])
 def medicos() -> list[dict]:
     return []
 
 
-@app.get("/api/especialistas", dependencies=[Depends(require_key)])
+@app.get("/api/especialistas", dependencies=[Depends(require_auth)])
 def especialistas() -> list[dict]:
     return []
 
 
-@app.get("/api/medicamentos", dependencies=[Depends(require_key)])
+@app.get("/api/medicamentos", dependencies=[Depends(require_auth)])
 def medicamentos() -> list[dict]:
     return []
 
 
-@app.get("/api/disponibilidad", dependencies=[Depends(require_key)])
+@app.get("/api/disponibilidad", dependencies=[Depends(require_auth)])
 def disponibilidad() -> list[dict]:
     return []
 
 
-@app.get("/api/citas", dependencies=[Depends(require_key)])
+@app.get("/api/citas", dependencies=[Depends(require_auth)])
 def citas() -> list[dict]:
     return []
 
 
-@app.get("/api/logs", dependencies=[Depends(require_key)])
+@app.get("/api/logs", dependencies=[Depends(require_auth)])
 def logs() -> list[dict]:
     return []
