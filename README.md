@@ -1,70 +1,75 @@
 # lucera-metrics
 
-API de métricas (solo lectura) que alimenta el **dashboard del cliente** (repo de Mauro:
-`MauricioSantos12/lucera-dashboard`). Lee la BD de Aiven y devuelve los datos en la
-**forma exacta** que espera el dashboard (ver `src/lib/mockData.ts`).
+API que alimenta el **dashboard del cliente** (repo de Mauro: `MauricioSantos12/lucera-dashboard`).
+Lee/escribe la BD de Aiven y devuelve los datos con **campos y rutas en inglés**.
+Documentación completa y navegable en `/` (ver `docs/index.html`).
 
-## Auth (JWT)
-El dashboard hace **login** contra este servicio y obtiene un **JWT**; luego manda ese
-token en cada request. La PII solo se sirve a usuarios autenticados.
+## Auth (JWT · access + refresh)
 
-1. `POST /auth/login`  →  body `{"email","password"}`  →  `{"token","user":{email,nombre,rol}}`
-2. En cada `GET /api/*`  →  header `Authorization: Bearer <token>`
+`POST /auth/login` devuelve **dos tokens**:
 
-`/health` y `/auth/login` son públicos; todo `/api/*` exige el Bearer (o, opcionalmente,
-un `X-API-Key` para scripts server-to-server). El token expira (`JWT_TTL_HOURS`, def. 12h).
+- `access_token` — corto (**2 h**), va en `Authorization: Bearer` en cada `/api/*`.
+- `refresh_token` — largo (**30 días**), sirve para renovar el access **sin re-login**.
 
-**Usuarios:** por defecto hay cuentas demo (`admin@lucera.pa`, `ventas@lucera.pa`,
-`esanchez@lucera.pa`) con la contraseña de `METRICS_DEMO_PASSWORD`. Para cuentas reales,
-setear `METRICS_USERS` (JSON: `[{"email","nombre","rol","password"}]`).
+```
+POST /auth/login    { email, password }        → { access_token, refresh_token, token_type, expires_in, user }
+POST /auth/refresh  { refresh_token }           → { access_token, token_type, expires_in }
+GET  /api/*         Authorization: Bearer <access_token>
+```
 
-### Integración en el dashboard de Mauro
-Su `lib/auth.tsx` hoy es mock (`login(user)` local). Cambiarlo para que `Login.tsx` haga
-`POST /auth/login`, guarde el `token` (localStorage) y lo mande como `Authorization: Bearer`
-en los `fetch` a `/api/*`. El `rol` viene en la respuesta para el control de vistas.
+Al caducar el access → `401 Token expired` → llamar `/auth/refresh`. Si el refresh también caducó → re-login.
+`/health`, `/auth/login` y `/auth/refresh` son públicos. Alternativa server-to-server: header `X-API-Key`.
+
+**Usuarios:** cuentas demo (`admin@lucera.pa`, `ventas@lucera.pa`, `esanchez@lucera.pa`) con la
+contraseña de `METRICS_DEMO_PASSWORD`. Para cuentas reales: `METRICS_USERS` (JSON `[{email,name,role,password}]`).
+
+## Paginación
+
+Todas las listas devuelven un **envelope** y aceptan `?page` (def. 1) y `?page_limit` (def. 20, máx. 200):
+
+```json
+{ "items": [ /* … */ ], "page": 1, "page_limit": 20, "total": 5, "total_pages": 1 }
+```
+
+`/api/guardians` y `/api/patients` aceptan además `?q=` (busca por nombre / teléfono / email).
 
 ## Endpoints
 
-| Método · Ruta | Devuelve (tipo del dashboard) | Fuente |
+| Método · Ruta | Devuelve | Fuente |
 |---|---|---|
 | `GET /health` | `{ok:true}` | — (público) |
-| `POST /auth/login` | `{token, user}` | usuarios (env/demo) — público |
-| `GET /api/acudientes` | `Acudiente[]` (con `ninos: NinoPaciente[]`) | guardians+users+dependents |
-| `GET /api/pacientes` | `Paciente[]` | dependents+sesiones |
-| `GET /api/chats` | `ChatSesion[]` (con `mensajes[]`) | chat_sessions+messages+flags+classification |
-| `GET /api/pagos` | `Pago[]` | payments |
-| `GET /api/centros` | `Centro[]` | hospitals |
-| `GET /api/seguros` | `{id,nombre}[]` | insurance_companies |
-| `GET /api/especialidades` | `string[]` | specialties |
-| `GET /api/stats/kpis` | objeto `kpisGenerales` | agregados |
-| `GET /api/stats/sesiones-por-mes` | `{mes,sesiones,premium}[]` | chat_sessions+payments |
-| `GET /api/stats/triaje` | `{nivel,value,color}[]` | classification |
-| `GET /api/stats/planes` | `{plan,usuarios,color}[]` | users+payments |
-| `GET /api/stats/tipo-atencion` | `{tipo,value}[]` | chat_sessions |
-| `GET /api/stats/csat` | `{semana,csat}[]` | feedback_score |
+| `POST /auth/login` · `POST /auth/refresh` | tokens | usuarios (env/demo) — público |
+| `GET /api/guardians` | envelope `Guardian` (con `insurance` + `children[]`) | guardians+users+dependents+insurance |
+| `GET/PATCH/DELETE /api/guardians/{id}` | un `Guardian` / actualizado / `{deleted,id}` | — (DELETE = borrado suave) |
+| `GET /api/patients` | envelope `Patient` (con `insurance`) | dependents+sesiones |
+| `GET/POST/PATCH/DELETE /api/patients[/{id}]` | CRUD de pacientes | dependents+guardian_dependent |
+| `GET /api/chats` | envelope `Chat` (con `messages[]`) | chat_sessions+messages+flags |
+| `GET /api/payments` | envelope `Payment` | payments |
+| `GET /api/centers` | envelope `Center` | hospitals |
+| `GET /api/insurances` | envelope `{id,name}` | insurance_companies |
+| `GET /api/specialties` | `string[]` | specialties |
+| `GET /api/usage/summary` · `/by-day` · `/by-user` | consumo de tokens/costo LLM | ai_model_runs |
+| `GET /api/stats/*` | KPIs y series (cacheados ~60 s) | agregados |
 
-### Secciones aún sin datos (devuelven `[]`)
-`/api/medicos`, `/api/especialistas`, `/api/medicamentos`, `/api/disponibilidad`,
-`/api/citas`, `/api/logs` — corresponden a funcionalidades que el producto todavía no
-tiene (médicos onboarded, catálogo de meds, agenda, auditoría). Se irán llenando en
-fases siguientes; el contrato ya está listo para cuando existan.
+**Cache:** las estadísticas y los consumos se cachean en memoria ~60 s por instancia.
+
+### Secciones aún sin datos (envelope vacío)
+`/api/doctors`, `/api/specialists`, `/api/medications`, `/api/availability`, `/api/appointments`,
+`/api/logs` — ya paginados, se llenan en fases siguientes.
 
 ## Variables de entorno
-`MYSQL_HOST`, `MYSQL_PORT`, `MYSQL_USER`, `MYSQL_PASSWORD`, `MYSQL_DB`, `MYSQL_SSL=true`,
-`METRICS_API_KEY` (si está vacía, no exige key — solo para local). Ver `.env.example`.
+`MYSQL_HOST/PORT/USER/PASSWORD/DB`, `MYSQL_SSL=true`, `JWT_SECRET`, `ACCESS_TTL_HOURS` (def. 2),
+`REFRESH_TTL_DAYS` (def. 30), `METRICS_API_KEY`, `METRICS_DEMO_PASSWORD`, `METRICS_USERS`. Ver `.env.example`.
 
 ## Local
 ```bash
 cp .env.example .env   # y rellena
-./run.sh               # http://localhost:8099
+./run.sh
 ```
 
 ## Deploy (Cloud Run)
-Imagen liviana (FastAPI + pymysql). Desplegar con `--no-allow-unauthenticated` no aplica
-(el dashboard la consume desde el navegador con la API key); usar **API key** como control.
 ```bash
 gcloud run deploy lucera-metrics --source . --region us-central1 \
-  --allow-unauthenticated --env-vars-file cloudrun.env.yaml
+  --memory 512Mi --env-vars-file cloudrun.env.yaml
 ```
-> El dashboard de Mauro apunta su `VITE_API_URL` (o equivalente) a la URL de este servicio
-> y manda `X-API-Key` en cada request.
+El dashboard apunta su `VITE_API_URL` a la URL del servicio y hace login para obtener el `access_token`.

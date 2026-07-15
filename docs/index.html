@@ -123,11 +123,11 @@
     <aside class="left" id="leftnav">
       <div class="grp">Empezar</div>
       <a href="#intro">Introducción</a><a href="#quickstart">Quickstart</a>
-      <a href="#auth">Autenticación</a><a href="#mapping">Mapeo ES → EN</a><a href="#convenciones">Convenciones</a>
+      <a href="#auth">Autenticación · Refresh</a><a href="#mapping">Mapeo ES → EN</a><a href="#convenciones">Convenciones · Paginación</a>
       <div class="grp">Endpoints</div>
-      <a href="#guardians">Guardians</a><a href="#patients">Patients</a><a href="#chats">Chats</a>
+      <a href="#guardians">Guardians · CRUD</a><a href="#patients">Patients · CRUD</a><a href="#chats">Chats</a>
       <a href="#payments">Payments</a><a href="#centers">Centers</a>
-      <a href="#catalogs">Insurances · Specialties</a><a href="#stats">Statistics / KPIs</a>
+      <a href="#catalogs">Insurances · Specialties</a><a href="#usage">Usage / Consumos</a><a href="#stats">Statistics / KPIs</a>
       <div class="grp">Integración</div>
       <a href="#react">Conectar el dashboard</a><a href="#future">Endpoints futuros</a>
       <a href="#errores">Errores</a><a href="#interactivo">Docs interactivas</a>
@@ -140,7 +140,7 @@
           del chatbot pediátrico. Campos, valores y rutas <b>en inglés</b>.</p>
         <div class="cards">
           <div class="card"><div class="k">Base URL</div><div class="v">https://lucera-metrics-877493497677.us-central1.run.app</div></div>
-          <div class="card"><div class="k">Auth</div><div class="v">JWT · Bearer</div></div>
+          <div class="card"><div class="k">Auth</div><div class="v">JWT · access + refresh</div></div>
           <div class="card"><div class="k">Formato</div><div class="v">JSON · UTF-8 · CORS</div></div>
         </div>
         <div class="adm warn"><div class="t">⚠️ Cambio de contrato</div><div class="c"><p>Esta versión usa
@@ -158,26 +158,40 @@ curl -X POST <span class="ts">"$BASE/auth/login"</span> -H <span class="ts">"Con
 <span class="tc"># 2 · use the token</span>
 curl <span class="ts">"$BASE/api/guardians"</span> -H <span class="ts">"Authorization: Bearer $TOKEN"</span></code></pre></div>
           <div class="panel"><pre><code><span class="tk">const</span> base = <span class="ts">"https://lucera-metrics-877493497677.us-central1.run.app"</span>;
-<span class="tk">const</span> { token } = <span class="tk">await</span> (<span class="tk">await</span> fetch(<span class="ts">`${base}/auth/login`</span>, {
+<span class="tk">const</span> { access_token } = <span class="tk">await</span> (<span class="tk">await</span> fetch(<span class="ts">`${base}/auth/login`</span>, {
   method:<span class="ts">"POST"</span>, headers:{<span class="ts">"Content-Type"</span>:<span class="ts">"application/json"</span>},
   body: JSON.stringify({ email:<span class="ts">"admin@lucera.pa"</span>, password:<span class="ts">"Lucera2026!"</span> }) })).json();
-<span class="tk">const</span> guardians = <span class="tk">await</span> (<span class="tk">await</span> fetch(<span class="ts">`${base}/api/guardians`</span>, {
-  headers:{ Authorization:<span class="ts">`Bearer ${token}`</span> } })).json();</code></pre></div>
+<span class="tk">const</span> { items } = <span class="tk">await</span> (<span class="tk">await</span> fetch(<span class="ts">`${base}/api/guardians?page=1&page_limit=20`</span>, {
+  headers:{ Authorization:<span class="ts">`Bearer ${access_token}`</span> } })).json();</code></pre></div>
           <div class="panel"><pre><code><span class="tk">import</span> requests
 base = <span class="ts">"https://lucera-metrics-877493497677.us-central1.run.app"</span>
-tok = requests.post(f<span class="ts">"{base}/auth/login"</span>, json={<span class="ts">"email"</span>:<span class="ts">"admin@lucera.pa"</span>,<span class="ts">"password"</span>:<span class="ts">"Lucera2026!"</span>}).json()[<span class="ts">"token"</span>]
+tok = requests.post(f<span class="ts">"{base}/auth/login"</span>, json={<span class="ts">"email"</span>:<span class="ts">"admin@lucera.pa"</span>,<span class="ts">"password"</span>:<span class="ts">"Lucera2026!"</span>}).json()[<span class="ts">"access_token"</span>]
 guardians = requests.get(f<span class="ts">"{base}/api/guardians"</span>, headers={<span class="ts">"Authorization"</span>:f<span class="ts">"Bearer {tok}"</span>}).json()</code></pre></div>
         </div>
       </section>
 
       <section id="auth">
         <h2>Autenticación</h2>
-        <p>JWT. El dashboard hace login, recibe un token firmado y lo envía en <code>Authorization</code>
-          en cada petición. Expira a las <b>12 h</b> → al caducar responde <span class="badge b-warn">401</span>.</p>
+        <p>JWT con <b>dos tokens</b>. El login devuelve un <code>access_token</code> (corto, <b>2 h</b>) y un
+          <code>refresh_token</code> (largo, <b>30 días</b>). Manda el <code>access_token</code> en
+          <code>Authorization: Bearer</code> en cada <code>/api/*</code>. Cuando caduque responde
+          <span class="badge b-warn">401 · Token expired</span> → pide uno nuevo con <code>/auth/refresh</code>
+          <b>sin volver a pedir contraseña</b>.</p>
         <div class="ep-h"><span class="m post">post</span><span class="path">/auth/login</span>
-          <span class="ret">→ <code>{ token, user }</code> · público</span></div>
+          <span class="ret">→ <code>{ access_token, refresh_token, user }</code> · público</span></div>
         <div class="single"><span class="cp" data-copy>Copiar</span><pre><code><span class="tc">// request</span>  { <span class="tk">"email"</span>:<span class="ts">"admin@lucera.pa"</span>, <span class="tk">"password"</span>:<span class="ts">"Lucera2026!"</span> }
-<span class="tc">// response</span> { <span class="tk">"token"</span>:<span class="ts">"eyJhbGci…"</span>, <span class="tk">"user"</span>:{ <span class="tk">"email"</span>:<span class="ts">"…"</span>, <span class="tk">"name"</span>:<span class="ts">"Admin Técnico"</span>, <span class="tk">"role"</span>:<span class="ts">"Admin"</span> } }</code></pre></div>
+<span class="tc">// response</span>
+{
+  <span class="tk">"access_token"</span>:<span class="ts">"eyJhbGci…"</span>,   <span class="tc">// úsalo en Authorization: Bearer</span>
+  <span class="tk">"refresh_token"</span>:<span class="ts">"eyJhbGci…"</span>,  <span class="tc">// guárdalo para renovar el access</span>
+  <span class="tk">"token_type"</span>:<span class="ts">"Bearer"</span>, <span class="tk">"expires_in"</span>:<span class="tn">7200</span>,
+  <span class="tk">"user"</span>:{ <span class="tk">"email"</span>:<span class="ts">"…"</span>, <span class="tk">"name"</span>:<span class="ts">"Admin Técnico"</span>, <span class="tk">"role"</span>:<span class="ts">"Admin"</span> }
+}</code></pre></div>
+        <div class="ep-h" style="margin-top:1.2em"><span class="m post">post</span><span class="path">/auth/refresh</span>
+          <span class="ret">→ <code>{ access_token, expires_in }</code> · público</span></div>
+        <div class="single"><span class="cp" data-copy>Copiar</span><pre><code><span class="tc">// request</span>  { <span class="tk">"refresh_token"</span>:<span class="ts">"eyJhbGci…"</span> }
+<span class="tc">// response</span> { <span class="tk">"access_token"</span>:<span class="ts">"eyJhbGci…"</span>, <span class="tk">"token_type"</span>:<span class="ts">"Bearer"</span>, <span class="tk">"expires_in"</span>:<span class="tn">7200</span> }
+<span class="tc">// si el refresh caducó (30 días) → 401 → vuelve a hacer login</span></code></pre></div>
         <h3>Cuentas demo</h3>
         <p>Contraseña <code>Lucera2026!</code>:</p>
         <div class="tw"><table>
@@ -223,41 +237,77 @@ guardians = requests.get(f<span class="ts">"{base}/api/guardians"</span>, header
       </section>
 
       <section id="convenciones">
-        <h2>Convenciones</h2>
+        <h2>Convenciones · Paginación</h2>
         <div class="tw"><table>
           <tr><th>Tema</th><th>Convención</th></tr>
-          <tr><td>Auth</td><td><code>Authorization: Bearer &lt;token&gt;</code> en todo <code>/api/*</code></td></tr>
+          <tr><td>Auth</td><td><code>Authorization: Bearer &lt;access_token&gt;</code> en todo <code>/api/*</code></td></tr>
           <tr><td>Fechas</td><td>Timestamps <code>"YYYY-MM-DD HH:MM"</code>; <code>birthDate</code> <code>"YYYY-MM-DD"</code></td></tr>
-          <tr><td>Colecciones</td><td>Array JSON (vacío <code>[]</code> si no hay datos)</td></tr>
+          <tr><td>Paginación</td><td>Las listas aceptan <code>?page</code> (def. 1) y <code>?page_limit</code> (def. 20, máx. 200)</td></tr>
+          <tr><td>Búsqueda</td><td><code>/api/guardians</code> y <code>/api/patients</code> aceptan <code>?q=</code> (nombre / teléfono / email)</td></tr>
         </table></div>
+        <p>Todos los endpoints de <b>lista</b> devuelven un <b>envelope</b> paginado. Los ejemplos de más abajo
+          muestran la forma de cada elemento de <code>items[]</code>:</p>
+        <div class="single"><span class="cp" data-copy>Copiar</span><pre><code><span class="tc">// GET /api/guardians?page=1&amp;page_limit=20</span>
+{
+  <span class="tk">"items"</span>:[ <span class="tc">/* … objetos del recurso … */</span> ],
+  <span class="tk">"page"</span>:<span class="tn">1</span>, <span class="tk">"page_limit"</span>:<span class="tn">20</span>, <span class="tk">"total"</span>:<span class="tn">5</span>, <span class="tk">"total_pages"</span>:<span class="tn">1</span>
+}</code></pre></div>
       </section>
 
       <section id="endpoints"></section>
       <section id="guardians">
-        <h2>Guardians</h2>
+        <h2>Guardians · CRUD</h2>
         <div class="ep-h"><span class="m get">get</span><span class="path">/api/guardians</span>
-          <span class="ret">→ <code>Guardian[]</code> (con <code>children: Child[]</code>)</span></div>
-        <div class="single"><span class="cp" data-copy>Copiar</span><pre><code>[
-  {
-    <span class="tk">"id"</span>:<span class="ts">"3015d1d6-…"</span>, <span class="tk">"phone"</span>:<span class="ts">"50762342370"</span>, <span class="tk">"email"</span>:<span class="ts">"ana.muschett@…"</span>,
-    <span class="tk">"name"</span>:<span class="ts">"Ana Muschett"</span>, <span class="tk">"relationship"</span>:<span class="ts">"mother"</span>,   <span class="tc">// mother|father|guardian|grandparent</span>
-    <span class="tk">"country"</span>:<span class="ts">"Panama"</span>, <span class="tk">"city"</span>:<span class="ts">"Ciudad de Panamá"</span>,
-    <span class="tk">"status"</span>:<span class="ts">"active"</span>,       <span class="tc">// active|suspended|inactive</span>
-    <span class="tk">"plan"</span>:<span class="ts">"free"</span>,           <span class="tc">// free|premium_monthly|premium_annual</span>
-    <span class="tk">"registeredAt"</span>:<span class="ts">"2026-07-01 07:04"</span>,
-    <span class="tk">"children"</span>:[ { <span class="tk">"id"</span>:<span class="ts">"…"</span>, <span class="tk">"name"</span>:<span class="ts">"Lucas Muschett"</span>, <span class="tk">"birthDate"</span>:<span class="ts">"2022-04-05"</span>,
-        <span class="tk">"bloodType"</span>:null, <span class="tk">"weightKg"</span>:<span class="tn">16.5</span>, <span class="tk">"conditions"</span>:[], <span class="tk">"allergies"</span>:[<span class="ts">"Maní (cacahuate)"</span>] } ]
-  }
-]</code></pre></div>
+          <span class="ret">→ envelope de <code>Guardian</code> · <code>?page ?page_limit ?q</code></span></div>
+        <p>Cada guardián trae su <code>insurance</code> (el seguro de sus hijos) y el arreglo <code>children</code>,
+          donde cada hijo incluye a su vez su propio <code>insurance</code>.</p>
+        <div class="single"><span class="cp" data-copy>Copiar</span><pre><code><span class="tc">// items[] →</span>
+{
+  <span class="tk">"id"</span>:<span class="ts">"3015d1d6-…"</span>, <span class="tk">"phone"</span>:<span class="ts">"50762342370"</span>, <span class="tk">"email"</span>:<span class="ts">"ana.muschett@…"</span>,
+  <span class="tk">"name"</span>:<span class="ts">"Ana Muschett"</span>, <span class="tk">"relationship"</span>:<span class="ts">"mother"</span>,   <span class="tc">// mother|father|guardian|grandparent</span>
+  <span class="tk">"country"</span>:<span class="ts">"Panama"</span>, <span class="tk">"city"</span>:<span class="ts">"Ciudad de Panamá"</span>,
+  <span class="tk">"status"</span>:<span class="ts">"active"</span>,       <span class="tc">// active|suspended|inactive</span>
+  <span class="tk">"plan"</span>:<span class="ts">"free"</span>,           <span class="tc">// free|premium_monthly|premium_annual</span>
+  <span class="tk">"insurance"</span>:{ <span class="tk">"id"</span>:<span class="tn">10</span>, <span class="tk">"name"</span>:<span class="ts">"Acerta"</span> },  <span class="tc">// o null si ningún hijo tiene seguro</span>
+  <span class="tk">"registeredAt"</span>:<span class="ts">"2026-07-01 07:04"</span>,
+  <span class="tk">"children"</span>:[ { <span class="tk">"id"</span>:<span class="ts">"…"</span>, <span class="tk">"name"</span>:<span class="ts">"Lucas Muschett"</span>, <span class="tk">"birthDate"</span>:<span class="ts">"2022-04-05"</span>,
+      <span class="tk">"bloodType"</span>:null, <span class="tk">"weightKg"</span>:<span class="tn">16.5</span>, <span class="tk">"conditions"</span>:[], <span class="tk">"allergies"</span>:[<span class="ts">"Maní"</span>],
+      <span class="tk">"insurance"</span>:{ <span class="tk">"id"</span>:<span class="tn">10</span>, <span class="tk">"name"</span>:<span class="ts">"Acerta"</span> } } ]
+}</code></pre></div>
+        <h3>Modificar / eliminar</h3>
+        <div class="ep-h"><span class="m get">get</span><span class="path">/api/guardians/{id}</span><span class="ret">→ un <code>Guardian</code></span></div>
+        <div class="ep-h" style="margin-top:.7em"><span class="m post" style="background:#d9822b">patch</span><span class="path">/api/guardians/{id}</span><span class="ret">→ el <code>Guardian</code> actualizado</span></div>
+        <div class="ep-h" style="margin-top:.7em"><span class="m post" style="background:#b23b4a">del</span><span class="path">/api/guardians/{id}</span><span class="ret">→ <code>{ deleted, id }</code></span></div>
+        <div class="single"><span class="cp" data-copy>Copiar</span><pre><code><span class="tc">// PATCH — todos los campos opcionales; solo manda lo que cambies</span>
+{ <span class="tk">"name"</span>:<span class="ts">"Ana M. Muschett"</span>, <span class="tk">"email"</span>:<span class="ts">"nueva@…"</span>, <span class="tk">"city"</span>:<span class="ts">"Colón"</span>,
+  <span class="tk">"relationship"</span>:<span class="ts">"mother"</span>, <span class="tk">"status"</span>:<span class="ts">"suspended"</span> }   <span class="tc">// status: active|suspended|inactive</span>
+
+<span class="tc">// DELETE es un borrado suave: desactiva la cuenta (deja de aparecer en la lista,</span>
+<span class="tc">// conserva el historial de chats/pagos). → { "deleted": true, "id": "…" }</span></code></pre></div>
       </section>
 
       <section id="patients">
-        <h2>Patients</h2>
+        <h2>Patients · CRUD</h2>
         <div class="ep-h"><span class="m get">get</span><span class="path">/api/patients</span>
-          <span class="ret">→ <code>Patient[]</code></span></div>
-        <div class="single"><span class="cp" data-copy>Copiar</span><pre><code>[ { <span class="tk">"id"</span>:<span class="ts">"…"</span>, <span class="tk">"name"</span>:<span class="ts">"Lucas Muschett"</span>, <span class="tk">"nationalId"</span>:<span class="ts">""</span>, <span class="tk">"age"</span>:<span class="tn">4</span>,
-    <span class="tk">"guardian"</span>:<span class="ts">"Ana Muschett"</span>, <span class="tk">"phone"</span>:<span class="ts">"50762342370"</span>,
-    <span class="tk">"status"</span>:<span class="ts">"active"</span>, <span class="tk">"lastConsultation"</span>:<span class="ts">"2026-07-10 15:47"</span> } ]</code></pre></div>
+          <span class="ret">→ envelope de <code>Patient</code> · <code>?page ?page_limit ?q</code></span></div>
+        <div class="single"><span class="cp" data-copy>Copiar</span><pre><code><span class="tc">// items[] →</span>
+{ <span class="tk">"id"</span>:<span class="ts">"…"</span>, <span class="tk">"name"</span>:<span class="ts">"Lucas Muschett"</span>, <span class="tk">"nationalId"</span>:<span class="ts">""</span>, <span class="tk">"age"</span>:<span class="tn">4</span>,
+  <span class="tk">"birthDate"</span>:<span class="ts">"2022-04-05"</span>, <span class="tk">"bloodType"</span>:<span class="ts">"O+"</span>, <span class="tk">"weightKg"</span>:<span class="tn">16.5</span>,
+  <span class="tk">"conditions"</span>:[<span class="ts">"asma"</span>], <span class="tk">"allergies"</span>:[<span class="ts">"Maní"</span>], <span class="tk">"insurance"</span>:{ <span class="tk">"id"</span>:<span class="tn">10</span>, <span class="tk">"name"</span>:<span class="ts">"Acerta"</span> },
+  <span class="tk">"guardianId"</span>:<span class="ts">"3015d1d6-…"</span>, <span class="tk">"guardian"</span>:<span class="ts">"Ana Muschett"</span>, <span class="tk">"phone"</span>:<span class="ts">"50762342370"</span>,
+  <span class="tk">"status"</span>:<span class="ts">"active"</span>, <span class="tk">"lastConsultation"</span>:<span class="ts">"2026-07-10 15:47"</span> }</code></pre></div>
+        <h3>Crear / modificar / eliminar</h3>
+        <div class="ep-h"><span class="m get">get</span><span class="path">/api/patients/{id}</span><span class="ret">→ un <code>Patient</code></span></div>
+        <div class="ep-h" style="margin-top:.7em"><span class="m post">post</span><span class="path">/api/patients</span><span class="ret">→ <span class="badge">201</span> el <code>Patient</code> creado</span></div>
+        <div class="ep-h" style="margin-top:.7em"><span class="m post" style="background:#d9822b">patch</span><span class="path">/api/patients/{id}</span><span class="ret">→ el <code>Patient</code> actualizado</span></div>
+        <div class="ep-h" style="margin-top:.7em"><span class="m post" style="background:#b23b4a">del</span><span class="path">/api/patients/{id}</span><span class="ret">→ <code>{ deleted, id }</code></span></div>
+        <div class="single"><span class="cp" data-copy>Copiar</span><pre><code><span class="tc">// POST — crea un hijo bajo un guardián. guardianId, name y birthDate son obligatorios</span>
+{ <span class="tk">"guardianId"</span>:<span class="ts">"3015d1d6-…"</span>, <span class="tk">"name"</span>:<span class="ts">"Mateo Muschett"</span>, <span class="tk">"birthDate"</span>:<span class="ts">"2020-03-15"</span>,
+  <span class="tk">"weightKg"</span>:<span class="tn">18.5</span>, <span class="tk">"bloodType"</span>:<span class="ts">"O+"</span>,       <span class="tc">// A+|A-|B+|B-|AB+|AB-|O+|O-</span>
+  <span class="tk">"conditions"</span>:[], <span class="tk">"allergies"</span>:[<span class="ts">"penicilina"</span>], <span class="tk">"insuranceId"</span>:<span class="tn">10</span> }
+
+<span class="tc">// PATCH — todos opcionales; DELETE borra el paciente (y limpia sus FKs).</span>
+{ <span class="tk">"weightKg"</span>:<span class="tn">20.0</span>, <span class="tk">"conditions"</span>:[<span class="ts">"asma"</span>], <span class="tk">"bloodType"</span>:<span class="ts">"A-"</span> }</code></pre></div>
       </section>
 
       <section id="chats">
@@ -307,8 +357,27 @@ guardians = requests.get(f<span class="ts">"{base}/api/guardians"</span>, header
 <span class="tc">// /api/specialties</span>  [ <span class="ts">"Pediatría"</span>, <span class="ts">"Neonatología"</span>, … ]</code></pre></div>
       </section>
 
+      <section id="usage">
+        <h2>Usage / Consumos</h2>
+        <p>Consumo de tokens y costo del LLM (tabla <code>ai_model_runs</code>), igual que el panel interno de
+          WhatsApp Manager. Cacheado ~60 s. Tres vistas:</p>
+        <div class="ep-h"><span class="m get">get</span><span class="path">/api/usage/summary</span><span class="ret">→ totales globales</span></div>
+        <div class="ep-h" style="margin-top:.7em"><span class="m get">get</span><span class="path">/api/usage/by-day</span><span class="ret">→ serie diaria</span></div>
+        <div class="ep-h" style="margin-top:.7em"><span class="m get">get</span><span class="path">/api/usage/by-user</span><span class="ret">→ por guardián</span></div>
+        <div class="single"><span class="cp" data-copy>Copiar</span><pre><code><span class="tc">// /api/usage/summary</span>
+{ <span class="tk">"calls"</span>:<span class="tn">317</span>, <span class="tk">"inputTokens"</span>:<span class="tn">4293413</span>, <span class="tk">"outputTokens"</span>:<span class="tn">156438</span>,
+  <span class="tk">"totalTokens"</span>:<span class="tn">4449851</span>, <span class="tk">"costUsd"</span>:<span class="tn">1.6791</span>, <span class="tk">"avgLatencyMs"</span>:<span class="tn">5552</span> }
+
+<span class="tc">// /api/usage/by-day</span>   [ { <span class="tk">"date"</span>:<span class="ts">"2026-07-10"</span>, <span class="tk">"calls"</span>:<span class="tn">42</span>, <span class="tk">"tokens"</span>:<span class="tn">610233</span>, <span class="tk">"costUsd"</span>:<span class="tn">0.23</span> }, … ]
+
+<span class="tc">// /api/usage/by-user</span>  [ { <span class="tk">"guardian"</span>:<span class="ts">"Ana Muschett"</span>, <span class="tk">"phone"</span>:<span class="ts">"50762342370"</span>,
+                       <span class="tk">"calls"</span>:<span class="tn">166</span>, <span class="tk">"tokens"</span>:<span class="tn">2360874</span>, <span class="tk">"costUsd"</span>:<span class="tn">0.8938</span> }, … ]</code></pre></div>
+      </section>
+
       <section id="stats">
         <h2>Statistics / KPIs</h2>
+        <p class="lede" style="font-size:15px">Las estadísticas y los consumos están <b>cacheados en memoria ~60 s</b>
+          por instancia, para que el dashboard cargue de una sola vez sin recalcular en cada request.</p>
         <div class="ep-h"><span class="m get">get</span><span class="path">/api/stats/kpis</span></div>
         <div class="single"><span class="cp" data-copy>Copiar</span><pre><code>{ <span class="tk">"activeGuardians"</span>:<span class="tn">5</span>, <span class="tk">"registeredChildren"</span>:<span class="tn">17</span>, <span class="tk">"sessionsThisMonth"</span>:<span class="tn">65</span>,
   <span class="tk">"premiumConversion"</span>:<span class="tn">40.0</span>, <span class="tk">"csat"</span>:<span class="tn">0</span>, <span class="tk">"emergenciesDetected"</span>:<span class="tn">6</span>,
@@ -335,31 +404,45 @@ guardians = requests.get(f<span class="ts">"{base}/api/guardians"</span>, header
   <span class="tk">const</span> r = <span class="tk">await</span> fetch(<span class="ts">`${BASE}/auth/login`</span>, { method:<span class="ts">"POST"</span>,
     headers:{<span class="ts">"Content-Type"</span>:<span class="ts">"application/json"</span>}, body: JSON.stringify({ email, password }) });
   <span class="tk">if</span> (!r.ok) <span class="tk">throw new</span> Error(<span class="ts">"Wrong email or password"</span>);
-  <span class="tk">const</span> { token, user } = <span class="tk">await</span> r.json();
-  localStorage.setItem(<span class="ts">"lucera_token"</span>, token);
+  <span class="tk">const</span> { access_token, refresh_token, user } = <span class="tk">await</span> r.json();
+  localStorage.setItem(<span class="ts">"lucera_at"</span>, access_token);
+  localStorage.setItem(<span class="ts">"lucera_rt"</span>, refresh_token);
   <span class="tk">return</span> user;   <span class="tc">// { email, name, role }</span>
 }
+<span class="tk">async function</span> refresh(): Promise&lt;boolean&gt; {   <span class="tc">// renueva el access sin re-login</span>
+  <span class="tk">const</span> rt = localStorage.getItem(<span class="ts">"lucera_rt"</span>);
+  <span class="tk">const</span> r = <span class="tk">await</span> fetch(<span class="ts">`${BASE}/auth/refresh`</span>, { method:<span class="ts">"POST"</span>,
+    headers:{<span class="ts">"Content-Type"</span>:<span class="ts">"application/json"</span>}, body: JSON.stringify({ refresh_token: rt }) });
+  <span class="tk">if</span> (!r.ok) <span class="tk">return false</span>;
+  localStorage.setItem(<span class="ts">"lucera_at"</span>, (<span class="tk">await</span> r.json()).access_token);
+  <span class="tk">return true</span>;
+}
 <span class="tk">export async function</span> api&lt;T&gt;(path: string): Promise&lt;T&gt; {
-  <span class="tk">const</span> token = localStorage.getItem(<span class="ts">"lucera_token"</span>);
-  <span class="tk">const</span> r = <span class="tk">await</span> fetch(<span class="ts">`${BASE}${path}`</span>, { headers:{ Authorization:<span class="ts">`Bearer ${token}`</span> } });
-  <span class="tk">if</span> (r.status === <span class="tn">401</span>) { localStorage.removeItem(<span class="ts">"lucera_token"</span>);
-    <span class="tk">throw new</span> Error(<span class="ts">"Session expired"</span>); }
+  <span class="tk">const</span> hit = () =&gt; fetch(<span class="ts">`${BASE}${path}`</span>,
+    { headers:{ Authorization:<span class="ts">`Bearer ${localStorage.getItem("lucera_at")}`</span> } });
+  <span class="tk">let</span> r = <span class="tk">await</span> hit();
+  <span class="tk">if</span> (r.status === <span class="tn">401</span> &amp;&amp; <span class="tk">await</span> refresh()) r = <span class="tk">await</span> hit();  <span class="tc">// reintenta 1 vez</span>
   <span class="tk">if</span> (!r.ok) <span class="tk">throw new</span> Error(<span class="ts">`Error ${r.status}`</span>);
   <span class="tk">return</span> r.json();
-}</code></pre></div>
+}
+<span class="tc">// helper para listas paginadas → devuelve solo items[]</span>
+<span class="tk">export const</span> list = &lt;T&gt;(p: string, page=<span class="tn">1</span>, n=<span class="tn">20</span>) =&gt;
+  api&lt;{ items:T[] }&gt;(<span class="ts">`${p}?page=${page}&page_limit=${n}`</span>).then(d =&gt; d.items);</code></pre></div>
           <div class="panel"><pre><code><span class="tk">import</span> { useQuery } <span class="tk">from</span> <span class="ts">"@tanstack/react-query"</span>;
-<span class="tk">import</span> { api } <span class="tk">from</span> <span class="ts">"@/lib/api"</span>;
+<span class="tk">import</span> { list } <span class="tk">from</span> <span class="ts">"@/lib/api"</span>;
 <span class="tk">import type</span> { Guardian } <span class="tk">from</span> <span class="ts">"@/lib/types"</span>;
 
-<span class="tk">export function</span> useGuardians() {
-  <span class="tk">return</span> useQuery({ queryKey:[<span class="ts">"guardians"</span>], queryFn:() =&gt; api&lt;Guardian[]&gt;(<span class="ts">"/api/guardians"</span>) });
+<span class="tk">export function</span> useGuardians(page=<span class="tn">1</span>) {
+  <span class="tk">return</span> useQuery({ queryKey:[<span class="ts">"guardians"</span>, page],
+    queryFn:() =&gt; list&lt;Guardian&gt;(<span class="ts">"/api/guardians"</span>, page) });   <span class="tc">// list() ya extrae items[]</span>
 }</code></pre></div>
         </div>
       </section>
 
       <section id="future">
         <h2>Endpoints futuros</h2>
-        <p>Existen y responden <code>[]</code> (funcionalidades aún no construidas):</p>
+        <p>Existen y responden un envelope vacío (<code>{ items:[], total:0, … }</code>) — funcionalidades aún no
+          construidas, pero ya paginados para cuando lleguen:</p>
         <div class="tw"><table>
           <tr><th>Ruta</th><th>Se llena cuando…</th></tr>
           <tr><td><code>/api/doctors</code> · <code>/api/specialists</code></td><td>haya médicos dados de alta</td></tr>
