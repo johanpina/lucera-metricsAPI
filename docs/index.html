@@ -218,12 +218,30 @@ guardians = requests.get(f<span class="ts">"{base}/api/guardians"</span>, header
 <span class="tc">// response</span> { <span class="tk">"access_token"</span>:<span class="ts">"eyJ…"</span>, <span class="tk">"refresh_token"</span>:<span class="ts">"eyJ…"</span>,
              <span class="tk">"guardian"</span>:{ <span class="tk">"id"</span>:<span class="ts">"…"</span>, <span class="tk">"name"</span>:<span class="ts">"Johan Piña"</span> } }
 <span class="tc">// El teléfono admite espacios/+, se normaliza a dígitos. Refresh: mismo /auth/refresh.</span></code></pre></div>
-        <h3>Habilitar el login (admin)</h3>
-        <p>Un acudiente <b>no tiene contraseña</b> hasta que un admin se la fija. Los usuarios del
-          bot de WhatsApp <b>no</b> pueden entrar hasta entonces (su <code>password_hash</code> queda vacío).</p>
+        <h3>Registro: el acudiente fija SU contraseña (recomendado)</h3>
+        <p>Un acudiente <b>no tiene contraseña</b> al inicio (su <code>password_hash</code> queda vacío,
+          no puede entrar). El flujo previsto: el <b>bot</b> le manda por WhatsApp un <b>link firmado</b> al
+          formulario de registro del dashboard, donde <b>él mismo</b> establece su contraseña.</p>
+        <div class="ep-h"><span class="m post">post</span><span class="path">/api/guardians/{id}/portal-link</span>
+          <span class="ret">→ <code>{ token, url, expiresInHours }</code> · token admin</span></div>
+        <div class="ep-h" style="margin-top:.7em"><span class="m get">get</span><span class="path">/portal/register/{token}</span>
+          <span class="ret">→ precarga el form · público</span></div>
+        <div class="ep-h" style="margin-top:.7em"><span class="m post">post</span><span class="path">/portal/register</span>
+          <span class="ret">→ fija la clave + activa · público</span></div>
+        <div class="single"><span class="cp" data-copy>Copiar</span><pre><code><span class="tc">// 1) el bot (o admin) obtiene el link firmado y lo envía por WhatsApp</span>
+<span class="tc">//    url = {PORTAL_REGISTER_URL}?token=…  (JWT HS256, exp 72h, claims sub=guardianId, typ=register)</span>
+<span class="tc">// 2) el form valida el token para precargar nombre/teléfono:</span>
+GET /portal/register/{token} → { <span class="tk">"guardianId"</span>, <span class="tk">"name"</span>, <span class="tk">"phone"</span>, <span class="tk">"email"</span>, <span class="tk">"hasPassword"</span> }
+<span class="tc">// 3) el acudiente envía su contraseña:</span>
+POST /portal/register  { <span class="tk">"token"</span>:<span class="ts">"eyJ…"</span>, <span class="tk">"password"</span>:<span class="ts">"MiClave123"</span>, <span class="tk">"email"</span>:<span class="ts">"opcional"</span> }
+<span class="tc">// token vencido → 410 · inválido → 400 · clave &lt;6 → 422</span></code></pre></div>
+        <p style="font-size:14.5px">El bot puede emitir el token él mismo (JWT HS256 con el secreto
+          compartido <code>PORTAL_TOKEN_SECRET</code>), sin llamar al API. <code>PORTAL_REGISTER_URL</code>
+          apunta al form de Mauro.</p>
+        <h3>Alternativa: el admin fija la clave directo</h3>
         <div class="ep-h"><span class="m post">post</span><span class="path">/api/guardians/{id}/portal-password</span>
-          <span class="ret">→ <code>{ ok, id }</code> · requiere token admin</span></div>
-        <div class="single"><span class="cp" data-copy>Copiar</span><pre><code>{ <span class="tk">"password"</span>:<span class="ts">"MiPortal2026!"</span> }   <span class="tc">// mín. 6 caracteres; se guarda con PBKDF2</span></code></pre></div>
+          <span class="ret">→ <code>{ ok, id }</code> · token admin</span></div>
+        <div class="single"><span class="cp" data-copy>Copiar</span><pre><code>{ <span class="tk">"password"</span>:<span class="ts">"MiPortal2026!"</span> }   <span class="tc">// mín. 6 caracteres; PBKDF2</span></code></pre></div>
         <h3>Endpoints del portal (token de acudiente)</h3>
         <div class="tw"><table>
           <tr><th>Ruta</th><th>Devuelve (solo lo del acudiente)</th></tr>

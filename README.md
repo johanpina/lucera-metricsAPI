@@ -29,10 +29,20 @@ Para cuentas reales: `METRICS_USERS` (JSON `[{email,name,role,pass_sha256|passwo
 Login aparte para que un acudiente vea **solo sus propios datos** (teléfono + contraseña):
 
 ```
+# Registro: el acudiente fija SU propia clave desde un form del dashboard (link firmado por el bot)
+POST /api/guardians/{id}/portal-link                       # admin → { token, url, expiresInHours }
+GET  /portal/register/{token}                              # público → precarga el form
+POST /portal/register  { token, password, email? }        # público → fija la clave + activa
+# Alternativa: el admin la fija directo
 POST /api/guardians/{id}/portal-password  { password }     # admin fija/actualiza la clave (PBKDF2)
+# Login + datos (scoped)
 POST /auth/guardian/login   { phone, password }            → { access_token, refresh_token, guardian }
 GET  /portal/me · /portal/children · /portal/patients · /portal/chats · /portal/payments
 ```
+
+El link de registro es un JWT HS256 (claims `sub=guardianId`, `typ=register`, exp 72h) firmado con
+`PORTAL_TOKEN_SECRET` — **secreto compartido con el bot**, que lo emite en su flujo de WhatsApp y manda
+el link embebido a `PORTAL_REGISTER_URL` (el form de Mauro).
 
 El token del portal lleva `scope=portal` + `gid`; **no puede** tocar `/api/*` (403 cruzado) y cada
 endpoint filtra por el `gid`. Un acudiente del bot no puede entrar hasta que un admin le fija la clave

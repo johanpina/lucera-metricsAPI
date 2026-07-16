@@ -123,6 +123,12 @@ ACCESS_TTL = int(os.environ.get("ACCESS_TTL_HOURS", "2")) * 3600
 REFRESH_TTL = int(os.environ.get("REFRESH_TTL_DAYS", "30")) * 86400
 API_KEY = os.environ.get("METRICS_API_KEY", "")
 
+# Registro del portal: el bot manda un link firmado al form del dashboard donde el
+# acudiente fija SU contraseña. Secreto COMPARTIDO con el bot para que pueda emitir el token.
+PORTAL_TOKEN_SECRET = os.environ.get("PORTAL_TOKEN_SECRET", JWT_SECRET)
+PORTAL_REGISTER_URL = os.environ.get("PORTAL_REGISTER_URL", "")  # URL del form de Mauro
+REGISTER_TTL = int(os.environ.get("REGISTER_TTL_HOURS", "72")) * 3600
+
 
 def _load_users() -> dict:
     raw = os.environ.get("METRICS_USERS", "").strip()
@@ -179,6 +185,28 @@ def _verify_password(password: str, stored: str) -> bool:
 
 def _digits(s: str | None) -> str:
     return re.sub(r"\D", "", s or "")
+
+
+def _make_register_token(gid: str) -> str:
+    """Token firmado para el link de registro del portal (identifica al acudiente)."""
+    now = int(time.time())
+    return jwt.encode(
+        {"sub": gid, "typ": "register", "iat": now, "exp": now + REGISTER_TTL},
+        PORTAL_TOKEN_SECRET, algorithm="HS256",
+    )
+
+
+def _verify_register_token(token: str) -> str:
+    """Valida el token del link de registro y devuelve el id del acudiente (gid)."""
+    try:
+        c = jwt.decode(token, PORTAL_TOKEN_SECRET, algorithms=["HS256"])
+    except jwt.ExpiredSignatureError:
+        raise HTTPException(status_code=410, detail="Registration link expired.")
+    except Exception:  # noqa: BLE001
+        raise HTTPException(status_code=400, detail="Invalid registration link.")
+    if c.get("typ") != "register" or not c.get("sub"):
+        raise HTTPException(status_code=400, detail="Invalid registration token.")
+    return c["sub"]
 
 
 def require_auth(
@@ -605,6 +633,18 @@ def guardian_set_portal_password(gid: str, body: PortalPassword):
     _exec("UPDATE users SET password_hash=%s, updated_at=NOW() WHERE id=%s",
           (_hash_password(body.password), g[0]["user_id"]))
     return {"ok": True, "id": gid}
+
+
+@app.post("/api/guardians/{gid}/portal-link", dependencies=[Depends(require_auth)])
+def guardian_portal_link(gid: str):
+    """Admin: emite un link firmado al formulario de registro del portal (para que el
+    acudiente fije su propia contraseña). El bot puede emitir el mismo token con el secreto
+    compartido PORTAL_TOKEN_SECRET (JWT HS256, claims: sub=guardianId, typ='register')."""
+    if not _q("SELECT id FROM guardians WHERE id=%s", (gid,)):
+        raise HTTPException(status_code=404, detail="Guardian not found.")
+    token = _make_register_token(gid)
+    url = f"{PORTAL_REGISTER_URL}?token={token}" if PORTAL_REGISTER_URL else None
+    return {"token": token, "url": url, "expiresInHours": REGISTER_TTL // 3600}
 
 
 # ── Patients (CRUD) ──────────────────────────────────────────────────────────
@@ -1169,6 +1209,47 @@ def stats_csat():
                   "WHERE feedback_score IS NOT NULL AND closed_at IS NOT NULL GROUP BY YEARWEEK(closed_at) ORDER BY yw")
         return [{"week": f"W{i + 1}", "csat": int(r["csat"])} for i, r in enumerate(rows)]
     return _cached("stats:csat", 60, _f)
+
+
+# ── Portal: registro (el acudiente fija SU contraseña vía link firmado) ───────
+class PortalRegister(BaseModel):
+    token: str
+    password: str
+    email: str | None = None
+
+
+@app.get("/portal/register/{token}")
+def portal_register_info(token: str):
+    """Público: valida el link y devuelve datos para precargar el formulario de registro."""
+    gid = _verify_register_token(token)
+    rows = _q(
+        """SELECT g.full_name AS name, u.phone_number AS phone, u.email,
+               LEFT(u.password_hash, 6) = 'pbkdf2' AS has_pw
+           FROM guardians g JOIN users u ON u.id=g.user_id WHERE g.id=%s""",
+        (gid,),
+    )
+    if not rows:
+        raise HTTPException(status_code=404, detail="Guardian not found.")
+    r = rows[0]
+    return {"guardianId": gid, "name": r["name"], "phone": r["phone"],
+            "email": r["email"], "hasPassword": bool(r["has_pw"])}
+
+
+@app.post("/portal/register")
+def portal_register(body: PortalRegister):
+    """Público: el acudiente fija su contraseña desde el form del dashboard (link firmado).
+    Activa la cuenta y habilita el login del portal."""
+    gid = _verify_register_token(body.token)
+    g = _q("SELECT user_id FROM guardians WHERE id=%s", (gid,))
+    if not g:
+        raise HTTPException(status_code=404, detail="Guardian not found.")
+    if len(body.password or "") < 6:
+        raise HTTPException(status_code=422, detail="Password must be at least 6 characters.")
+    sets, args = ["password_hash=%s", "status='active'", "is_active=1"], [_hash_password(body.password)]
+    if body.email:
+        sets.append("email=%s"); args.append(body.email.strip())
+    _exec(f"UPDATE users SET {', '.join(sets)}, updated_at=NOW() WHERE id=%s", tuple(args + [g[0]["user_id"]]))
+    return {"ok": True, "guardianId": gid}
 
 
 # ── Portal del acudiente (scoped: SOLO los datos del propio acudiente) ────────
