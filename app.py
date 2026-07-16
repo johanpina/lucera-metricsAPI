@@ -81,6 +81,17 @@ def _tx(statements: list[tuple]) -> None:
         conn.close()
 
 
+def _guard_integrity(fn):
+    """Run a write, translating DB constraint errors into 409s."""
+    try:
+        return fn()
+    except pymysql.err.IntegrityError as e:
+        msg = e.args[1] if len(e.args) > 1 else str(e)
+        if "foreign key" in msg.lower():
+            raise HTTPException(status_code=409, detail="Cannot delete: still referenced by other records.")
+        raise HTTPException(status_code=409, detail="Duplicate or invalid value (unique/constraint).")
+
+
 def _clean(v):
     if isinstance(v, datetime):
         return v.strftime("%Y-%m-%d %H:%M")
@@ -357,6 +368,32 @@ def _one_guardian(gid: str) -> dict:
     return _guardian_row(gs[0], kids.get(gid, []))
 
 
+class GuardianCreate(BaseModel):
+    name: str
+    phone: str
+    email: str
+    relationship: str | None = None
+    city: str | None = None
+    province: str | None = None
+    address: str | None = None
+
+
+@app.post("/api/guardians", dependencies=[Depends(require_auth)], status_code=201)
+def guardian_create(body: GuardianCreate):
+    rel = REL_IN.get((body.relationship or "guardian").lower(), "tutor")
+    phone = body.phone.strip().lstrip("+")
+    uid, gid = str(uuid.uuid4()), str(uuid.uuid4())
+    _guard_integrity(lambda: _tx([
+        ("""INSERT INTO users (id, email, phone_number, password_hash, role, status, is_active, created_at, updated_at)
+             VALUES (%s,%s,%s,%s,'guardian','active',1,NOW(),NOW())""",
+         (uid, body.email.strip().lower(), phone, "!dashboard-created")),
+        ("""INSERT INTO guardians (id, user_id, full_name, relationship_type, address, city, province, created_at)
+             VALUES (%s,%s,%s,%s,%s,%s,%s,NOW())""",
+         (gid, uid, body.name.strip(), rel, body.address, body.city, body.province)),
+    ]))
+    return _one_guardian(gid)
+
+
 @app.get("/api/guardians/{gid}", dependencies=[Depends(require_auth)])
 def guardian_get(gid: str):
     return _one_guardian(gid)
@@ -593,57 +630,268 @@ def chats(page: int = 1, page_limit: int = 20):
     return _envelope(items, page, page_limit, total)
 
 
-# ── Payments (paginated) ─────────────────────────────────────────────────────
-@app.get("/api/payments", dependencies=[Depends(require_auth)])
-def payments(page: int = 1, page_limit: int = 20):
+# ── Plans (read catalog) ─────────────────────────────────────────────────────
+@app.get("/api/plans", dependencies=[Depends(require_auth)])
+def plans(page: int = 1, page_limit: int = 50):
     page, page_limit, off = _pag(page, page_limit)
-    total = _q("SELECT COUNT(*) c FROM payments")[0]["c"]
-    rows = _q(
-        """SELECT p.id, p.provider_txn_id, g.full_name AS guardian, p.amount_usd AS amount,
-               p.provider, p.billing_cycle, p.status, p.created_at, p.confirmed_at
-        FROM payments p JOIN users u ON u.id=p.user_id LEFT JOIN guardians g ON g.user_id=u.id
-        ORDER BY p.created_at DESC LIMIT %s OFFSET %s""",
-        (page_limit, off),
-    )
-    items = [{
+    total = _q("SELECT COUNT(*) c FROM subscription_plans WHERE active=1")[0]["c"]
+    rows = _q("SELECT id, name, max_dependents, price_monthly_usd, price_annual_usd FROM subscription_plans "
+              "WHERE active=1 ORDER BY price_monthly_usd LIMIT %s OFFSET %s", (page_limit, off))
+    items = [{"id": r["id"], "name": r["name"], "maxDependents": r["max_dependents"],
+              "priceMonthly": float(r["price_monthly_usd"]), "priceAnnual": float(r["price_annual_usd"])} for r in rows]
+    return _envelope(items, page, page_limit, total)
+
+
+# ── Payments (paginated + create) ────────────────────────────────────────────
+_PAY_SELECT = """SELECT p.id, p.provider_txn_id, g.full_name AS guardian, p.amount_usd AS amount,
+    p.provider, p.billing_cycle, p.status, p.created_at, p.confirmed_at
+    FROM payments p JOIN users u ON u.id=p.user_id LEFT JOIN guardians g ON g.user_id=u.id"""
+
+
+def _payment_row(r: dict) -> dict:
+    return {
         "id": r["provider_txn_id"] or r["id"], "guardian": r["guardian"] or "",
         "amount": float(r["amount"]) if r["amount"] is not None else 0,
         "method": PAY_METHOD.get(r["provider"], "yappy"), "plan": _plan(r["billing_cycle"]),
         "status": PAY_STATUS.get(r["status"], "pending"),
         "date": _clean(r["confirmed_at"] or r["created_at"]), "providerResponse": r["status"], "paymentType": "credit",
-    } for r in rows]
-    return _envelope(items, page, page_limit, total)
+    }
 
 
-# ── Centers (paginated) ──────────────────────────────────────────────────────
+@app.get("/api/payments", dependencies=[Depends(require_auth)])
+def payments(page: int = 1, page_limit: int = 20):
+    page, page_limit, off = _pag(page, page_limit)
+    total = _q("SELECT COUNT(*) c FROM payments")[0]["c"]
+    rows = _q(f"{_PAY_SELECT} ORDER BY p.created_at DESC LIMIT %s OFFSET %s", (page_limit, off))
+    return _envelope([_payment_row(r) for r in rows], page, page_limit, total)
+
+
+@app.get("/api/payments/{pid}", dependencies=[Depends(require_auth)])
+def payment_get(pid: str):
+    rows = _q(f"{_PAY_SELECT} WHERE p.id=%s OR p.provider_txn_id=%s", (pid, pid))
+    if not rows:
+        raise HTTPException(status_code=404, detail="Payment not found.")
+    return _payment_row(rows[0])
+
+
+class PaymentCreate(BaseModel):
+    guardianId: str
+    amount: float
+    method: str | None = None
+    billingCycle: str | None = None
+    status: str | None = None
+    planId: str | None = None
+    txnId: str | None = None
+
+
+@app.post("/api/payments", dependencies=[Depends(require_auth)], status_code=201)
+def payment_create(body: PaymentCreate):
+    g = _q("SELECT user_id FROM guardians WHERE id=%s", (body.guardianId,))
+    if not g:
+        raise HTTPException(status_code=404, detail="guardianId not found.")
+    uid = g[0]["user_id"]
+    cycle = body.billingCycle if body.billingCycle in ("monthly", "annual") else "monthly"
+    provider = "yappy" if (body.method or "").lower() == "yappy" else "tilopay"
+    status = body.status if body.status in ("pending", "confirmed", "failed", "refunded") else "confirmed"
+    # resolve plan_id: explicit → by price match → cheapest active
+    plan_id = None
+    if body.planId and _q("SELECT id FROM subscription_plans WHERE id=%s", (body.planId,)):
+        plan_id = body.planId
+    if plan_id is None:
+        col = "price_monthly_usd" if cycle == "monthly" else "price_annual_usd"
+        m = _q(f"SELECT id FROM subscription_plans WHERE active=1 AND {col}=%s ORDER BY {col} LIMIT 1", (body.amount,))
+        plan_id = m[0]["id"] if m else _q("SELECT id FROM subscription_plans WHERE active=1 ORDER BY price_monthly_usd LIMIT 1")[0]["id"]
+    pid = str(uuid.uuid4())
+    conf = "NOW()" if status == "confirmed" else "NULL"
+    _guard_integrity(lambda: _exec(
+        f"""INSERT INTO payments (id, user_id, plan_id, billing_cycle, provider, provider_txn_id,
+             amount_usd, status, created_at, confirmed_at)
+             VALUES (%s,%s,%s,%s,%s,%s,%s,%s,NOW(),{conf})""",
+        (pid, uid, plan_id, cycle, provider, body.txnId, body.amount, status)))
+    return payment_get(pid)
+
+
+# ── Centers / hospitals (CRUD) ───────────────────────────────────────────────
+TIERS = ("privado_tier1", "css", "publico_minsa")
+
+
+def _center_row(r: dict) -> dict:
+    nm = (r["name"] or "").lower()
+    typ = "Clinic" if ("clínic" in nm or "clinic" in nm) else ("Emergency" if "urgenc" in nm else "Hospital")
+    return {"id": r["id"], "name": r["name"], "type": typ, "city": r["city"] or "",
+            "address": r["address"] or "", "phone": r["phone"] or "", "tier": r.get("tier"),
+            "hours": "24/7", "recommended": bool(r["recommended"])}
+
+
 @app.get("/api/centers", dependencies=[Depends(require_auth)])
 def centers(page: int = 1, page_limit: int = 50):
     page, page_limit, off = _pag(page, page_limit)
-    total = _q("SELECT COUNT(*) c FROM hospitals WHERE active=1 OR active IS NULL")[0]["c"]
-    rows = _q("SELECT id, name, city, address, phone, recommended FROM hospitals "
-              "WHERE active=1 OR active IS NULL ORDER BY name LIMIT %s OFFSET %s", (page_limit, off))
-    items = []
-    for r in rows:
-        nm = (r["name"] or "").lower()
-        typ = "Clinic" if ("clínic" in nm or "clinic" in nm) else ("Emergency" if "urgenc" in nm else "Hospital")
-        items.append({"id": r["id"], "name": r["name"], "type": typ, "city": r["city"] or "",
-                      "address": r["address"] or "", "phone": r["phone"] or "", "hours": "24/7",
-                      "recommended": bool(r["recommended"])})
-    return _envelope(items, page, page_limit, total)
+    total = _q("SELECT COUNT(*) c FROM hospitals WHERE active=1")[0]["c"]
+    rows = _q("SELECT id, name, city, address, phone, tier, recommended FROM hospitals "
+              "WHERE active=1 ORDER BY name LIMIT %s OFFSET %s", (page_limit, off))
+    return _envelope([_center_row(r) for r in rows], page, page_limit, total)
 
 
-# ── Catalogs ─────────────────────────────────────────────────────────────────
+def _one_center(cid: str) -> dict:
+    rows = _q("SELECT id, name, city, address, phone, tier, recommended FROM hospitals WHERE id=%s", (cid,))
+    if not rows:
+        raise HTTPException(status_code=404, detail="Center not found.")
+    return _center_row(rows[0])
+
+
+@app.get("/api/centers/{cid}", dependencies=[Depends(require_auth)])
+def center_get(cid: str):
+    return _one_center(cid)
+
+
+class CenterCreate(BaseModel):
+    name: str
+    city: str
+    address: str | None = None
+    phone: str | None = None
+    tier: str | None = None
+    recommended: bool | None = None
+    country: str | None = None
+
+
+class CenterUpdate(BaseModel):
+    name: str | None = None
+    city: str | None = None
+    address: str | None = None
+    phone: str | None = None
+    tier: str | None = None
+    recommended: bool | None = None
+
+
+@app.post("/api/centers", dependencies=[Depends(require_auth)], status_code=201)
+def center_create(body: CenterCreate):
+    tier = body.tier if body.tier in TIERS else "publico_minsa"
+    cid = str(uuid.uuid4())
+    _exec("""INSERT INTO hospitals (id, name, city, country, address, phone, tier, recommended, active, created_at)
+             VALUES (%s,%s,%s,%s,%s,%s,%s,%s,1,NOW())""",
+          (cid, body.name.strip(), body.city.strip(), body.country or "Panamá", body.address, body.phone,
+           tier, 1 if body.recommended else 0))
+    return _one_center(cid)
+
+
+@app.patch("/api/centers/{cid}", dependencies=[Depends(require_auth)])
+def center_update(cid: str, body: CenterUpdate):
+    if not _q("SELECT id FROM hospitals WHERE id=%s", (cid,)):
+        raise HTTPException(status_code=404, detail="Center not found.")
+    sets, args = [], []
+    for col, val in (("name", body.name), ("city", body.city), ("address", body.address), ("phone", body.phone)):
+        if val is not None:
+            sets.append(f"{col}=%s"); args.append(val)
+    if body.tier is not None:
+        if body.tier not in TIERS:
+            raise HTTPException(status_code=422, detail=f"tier must be one of {TIERS}.")
+        sets.append("tier=%s"); args.append(body.tier)
+    if body.recommended is not None:
+        sets.append("recommended=%s"); args.append(1 if body.recommended else 0)
+    if sets:
+        _exec(f"UPDATE hospitals SET {', '.join(sets)} WHERE id=%s", tuple(args + [cid]))
+    return _one_center(cid)
+
+
+@app.delete("/api/centers/{cid}", dependencies=[Depends(require_auth)])
+def center_delete(cid: str):
+    if not _q("SELECT id FROM hospitals WHERE id=%s", (cid,)):
+        raise HTTPException(status_code=404, detail="Center not found.")
+    _exec("UPDATE hospitals SET active=0 WHERE id=%s", (cid,))
+    return {"deleted": True, "id": cid}
+
+
+# ── Insurances (CRUD) ────────────────────────────────────────────────────────
+class NameIn(BaseModel):
+    name: str
+
+
+class InsuranceUpdate(BaseModel):
+    name: str | None = None
+    active: bool | None = None
+
+
 @app.get("/api/insurances", dependencies=[Depends(require_auth)])
 def insurances(page: int = 1, page_limit: int = 100):
     page, page_limit, off = _pag(page, page_limit)
-    total = _q("SELECT COUNT(*) c FROM insurance_companies")[0]["c"]
-    rows = _q("SELECT id, name FROM insurance_companies ORDER BY name LIMIT %s OFFSET %s", (page_limit, off))
+    total = _q("SELECT COUNT(*) c FROM insurance_companies WHERE active=1")[0]["c"]
+    rows = _q("SELECT id, name FROM insurance_companies WHERE active=1 ORDER BY name LIMIT %s OFFSET %s", (page_limit, off))
     return _envelope([{"id": r["id"], "name": r["name"]} for r in rows], page, page_limit, total)
 
 
+@app.post("/api/insurances", dependencies=[Depends(require_auth)], status_code=201)
+def insurance_create(body: NameIn):
+    def _ins():
+        _exec("INSERT INTO insurance_companies (name, active) VALUES (%s,1)", (body.name.strip(),))
+        return _q("SELECT id, name FROM insurance_companies WHERE name=%s", (body.name.strip(),))[0]
+    r = _guard_integrity(_ins)
+    return {"id": r["id"], "name": r["name"]}
+
+
+@app.patch("/api/insurances/{iid}", dependencies=[Depends(require_auth)])
+def insurance_update(iid: int, body: InsuranceUpdate):
+    if not _q("SELECT id FROM insurance_companies WHERE id=%s", (iid,)):
+        raise HTTPException(status_code=404, detail="Insurance not found.")
+    sets, args = [], []
+    if body.name is not None:
+        sets.append("name=%s"); args.append(body.name.strip())
+    if body.active is not None:
+        sets.append("active=%s"); args.append(1 if body.active else 0)
+    if sets:
+        _guard_integrity(lambda: _exec(f"UPDATE insurance_companies SET {', '.join(sets)} WHERE id=%s", tuple(args + [iid])))
+    r = _q("SELECT id, name, active FROM insurance_companies WHERE id=%s", (iid,))[0]
+    return {"id": r["id"], "name": r["name"], "active": bool(r["active"])}
+
+
+@app.delete("/api/insurances/{iid}", dependencies=[Depends(require_auth)])
+def insurance_delete(iid: int):
+    if not _q("SELECT id FROM insurance_companies WHERE id=%s", (iid,)):
+        raise HTTPException(status_code=404, detail="Insurance not found.")
+    _exec("UPDATE insurance_companies SET active=0 WHERE id=%s", (iid,))  # soft delete (FK-safe)
+    return {"deleted": True, "id": iid}
+
+
+# ── Specialties (CRUD) ───────────────────────────────────────────────────────
 @app.get("/api/specialties", dependencies=[Depends(require_auth)])
 def specialties() -> list[str]:
     return _cached("specialties", 300, lambda: [r["name"] for r in _q("SELECT name FROM specialties ORDER BY name")])
+
+
+@app.get("/api/specialties/all", dependencies=[Depends(require_auth)])
+def specialties_all(page: int = 1, page_limit: int = 100):
+    """Same catalog but with ids, for admin management (create/edit/delete)."""
+    page, page_limit, off = _pag(page, page_limit)
+    total = _q("SELECT COUNT(*) c FROM specialties")[0]["c"]
+    rows = _q("SELECT id, name FROM specialties ORDER BY name LIMIT %s OFFSET %s", (page_limit, off))
+    return _envelope([{"id": r["id"], "name": r["name"]} for r in rows], page, page_limit, total)
+
+
+@app.post("/api/specialties", dependencies=[Depends(require_auth)], status_code=201)
+def specialty_create(body: NameIn):
+    def _ins():
+        _exec("INSERT INTO specialties (name) VALUES (%s)", (body.name.strip(),))
+        return _q("SELECT id, name FROM specialties WHERE name=%s", (body.name.strip(),))[0]
+    r = _guard_integrity(_ins)
+    _CACHE.pop("specialties", None)
+    return {"id": r["id"], "name": r["name"]}
+
+
+@app.patch("/api/specialties/{sid}", dependencies=[Depends(require_auth)])
+def specialty_update(sid: int, body: NameIn):
+    if not _q("SELECT id FROM specialties WHERE id=%s", (sid,)):
+        raise HTTPException(status_code=404, detail="Specialty not found.")
+    _guard_integrity(lambda: _exec("UPDATE specialties SET name=%s WHERE id=%s", (body.name.strip(), sid)))
+    _CACHE.pop("specialties", None)
+    return {"id": sid, "name": body.name.strip()}
+
+
+@app.delete("/api/specialties/{sid}", dependencies=[Depends(require_auth)])
+def specialty_delete(sid: int):
+    if not _q("SELECT id FROM specialties WHERE id=%s", (sid,)):
+        raise HTTPException(status_code=404, detail="Specialty not found.")
+    _guard_integrity(lambda: _exec("DELETE FROM specialties WHERE id=%s", (sid,)))
+    _CACHE.pop("specialties", None)
+    return {"deleted": True, "id": sid}
 
 
 # ── Usage / consumos (cached) ────────────────────────────────────────────────

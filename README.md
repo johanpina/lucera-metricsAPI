@@ -39,15 +39,15 @@ Todas las listas devuelven un **envelope** y aceptan `?page` (def. 1) y `?page_l
 |---|---|---|
 | `GET /health` | `{ok:true}` | — (público) |
 | `POST /auth/login` · `POST /auth/refresh` | tokens | usuarios (env/demo) — público |
-| `GET /api/guardians` | envelope `Guardian` (con `insurance` + `children[]`) | guardians+users+dependents+insurance |
+| `GET/POST /api/guardians` | envelope `Guardian` (con `insurance` + `children[]`) / crea acudiente + user | guardians+users+dependents+insurance |
 | `GET/PATCH/DELETE /api/guardians/{id}` | un `Guardian` / actualizado / `{deleted,id}` | — (DELETE = borrado suave) |
-| `GET /api/patients` | envelope `Patient` (con `insurance`) | dependents+sesiones |
-| `GET/POST/PATCH/DELETE /api/patients[/{id}]` | CRUD de pacientes | dependents+guardian_dependent |
+| `GET/POST/PATCH/DELETE /api/patients[/{id}]` | CRUD de pacientes (con `insurance`) | dependents+guardian_dependent |
 | `GET /api/chats` | envelope `Chat` (con `messages[]`) | chat_sessions+messages+flags |
-| `GET /api/payments` | envelope `Payment` | payments |
-| `GET /api/centers` | envelope `Center` | hospitals |
-| `GET /api/insurances` | envelope `{id,name}` | insurance_companies |
-| `GET /api/specialties` | `string[]` | specialties |
+| `GET/POST /api/payments` · `GET /api/payments/{id}` | envelope `Payment` / registra pago | payments+subscription_plans |
+| `GET /api/plans` | envelope de planes de suscripción | subscription_plans |
+| `GET/POST/PATCH/DELETE /api/centers[/{id}]` | CRUD de centros de atención | hospitals |
+| `GET/POST/PATCH/DELETE /api/insurances[/{id}]` | CRUD de seguros médicos | insurance_companies |
+| `GET /api/specialties` · `GET /api/specialties/all` · `POST/PATCH/DELETE` | `string[]` / con ids / CRUD | specialties |
 | `GET /api/usage/summary` · `/by-day` · `/by-user` | consumo de tokens/costo LLM | ai_model_runs |
 | `GET /api/stats/*` | KPIs y series (cacheados ~60 s) | agregados |
 

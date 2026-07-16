@@ -126,8 +126,8 @@
       <a href="#auth">Autenticación · Refresh</a><a href="#mapping">Mapeo ES → EN</a><a href="#convenciones">Convenciones · Paginación</a>
       <div class="grp">Endpoints</div>
       <a href="#guardians">Guardians · CRUD</a><a href="#patients">Patients · CRUD</a><a href="#chats">Chats</a>
-      <a href="#payments">Payments</a><a href="#centers">Centers</a>
-      <a href="#catalogs">Insurances · Specialties</a><a href="#usage">Usage / Consumos</a><a href="#stats">Statistics / KPIs</a>
+      <a href="#payments">Payments · create</a><a href="#centers">Centers · CRUD</a>
+      <a href="#catalogs">Insurances · Specialties · CRUD</a><a href="#usage">Usage / Consumos</a><a href="#stats">Statistics / KPIs</a>
       <div class="grp">Integración</div>
       <a href="#react">Conectar el dashboard</a><a href="#future">Endpoints futuros</a>
       <a href="#errores">Errores</a><a href="#interactivo">Docs interactivas</a>
@@ -274,11 +274,17 @@ guardians = requests.get(f<span class="ts">"{base}/api/guardians"</span>, header
       <span class="tk">"bloodType"</span>:null, <span class="tk">"weightKg"</span>:<span class="tn">16.5</span>, <span class="tk">"conditions"</span>:[], <span class="tk">"allergies"</span>:[<span class="ts">"Maní"</span>],
       <span class="tk">"insurance"</span>:{ <span class="tk">"id"</span>:<span class="tn">10</span>, <span class="tk">"name"</span>:<span class="ts">"Acerta"</span> } } ]
 }</code></pre></div>
-        <h3>Modificar / eliminar</h3>
-        <div class="ep-h"><span class="m get">get</span><span class="path">/api/guardians/{id}</span><span class="ret">→ un <code>Guardian</code></span></div>
+        <h3>Crear / modificar / eliminar</h3>
+        <div class="ep-h"><span class="m post">post</span><span class="path">/api/guardians</span><span class="ret">→ <span class="badge">201</span> el <code>Guardian</code> creado</span></div>
+        <div class="ep-h" style="margin-top:.7em"><span class="m get">get</span><span class="path">/api/guardians/{id}</span><span class="ret">→ un <code>Guardian</code></span></div>
         <div class="ep-h" style="margin-top:.7em"><span class="m post" style="background:#d9822b">patch</span><span class="path">/api/guardians/{id}</span><span class="ret">→ el <code>Guardian</code> actualizado</span></div>
         <div class="ep-h" style="margin-top:.7em"><span class="m post" style="background:#b23b4a">del</span><span class="path">/api/guardians/{id}</span><span class="ret">→ <code>{ deleted, id }</code></span></div>
-        <div class="single"><span class="cp" data-copy>Copiar</span><pre><code><span class="tc">// PATCH — todos los campos opcionales; solo manda lo que cambies</span>
+        <div class="single"><span class="cp" data-copy>Copiar</span><pre><code><span class="tc">// POST — crea el acudiente (y su cuenta de usuario). name, phone y email obligatorios.</span>
+{ <span class="tk">"name"</span>:<span class="ts">"Ana Muschett"</span>, <span class="tk">"phone"</span>:<span class="ts">"+507 6234-2370"</span>, <span class="tk">"email"</span>:<span class="ts">"ana@…"</span>,
+  <span class="tk">"relationship"</span>:<span class="ts">"mother"</span>, <span class="tk">"city"</span>:<span class="ts">"Ciudad de Panamá"</span>, <span class="tk">"province"</span>:<span class="ts">"Panamá"</span> }
+<span class="tc">// email o phone duplicado → 409</span>
+
+<span class="tc">// PATCH — todos los campos opcionales; solo manda lo que cambies</span>
 { <span class="tk">"name"</span>:<span class="ts">"Ana M. Muschett"</span>, <span class="tk">"email"</span>:<span class="ts">"nueva@…"</span>, <span class="tk">"city"</span>:<span class="ts">"Colón"</span>,
   <span class="tk">"relationship"</span>:<span class="ts">"mother"</span>, <span class="tk">"status"</span>:<span class="ts">"suspended"</span> }   <span class="tc">// status: active|suspended|inactive</span>
 
@@ -333,28 +339,64 @@ guardians = requests.get(f<span class="ts">"{base}/api/guardians"</span>, header
       <section id="payments">
         <h2>Payments</h2>
         <div class="ep-h"><span class="m get">get</span><span class="path">/api/payments</span>
-          <span class="ret">→ <code>Payment[]</code></span></div>
-        <div class="single"><span class="cp" data-copy>Copiar</span><pre><code>[ { <span class="tk">"id"</span>:<span class="ts">"txn_…"</span>, <span class="tk">"guardian"</span>:<span class="ts">"Nicolás Orozco"</span>, <span class="tk">"amount"</span>:<span class="tn">15.0</span>,
-    <span class="tk">"method"</span>:<span class="ts">"yappy"</span>,          <span class="tc">// stripe|yappy</span>
-    <span class="tk">"plan"</span>:<span class="ts">"premium_monthly"</span>, <span class="tk">"status"</span>:<span class="ts">"confirmed"</span>,  <span class="tc">// confirmed|pending|failed|refunded</span>
-    <span class="tk">"date"</span>:<span class="ts">"2026-07-01 07:20"</span>, <span class="tk">"providerResponse"</span>:<span class="ts">"confirmed"</span>, <span class="tk">"paymentType"</span>:<span class="ts">"credit"</span> } ]</code></pre></div>
+          <span class="ret">→ envelope de <code>Payment</code> · <code>?page ?page_limit</code></span></div>
+        <div class="single"><span class="cp" data-copy>Copiar</span><pre><code><span class="tc">// items[] →</span>
+{ <span class="tk">"id"</span>:<span class="ts">"txn_…"</span>, <span class="tk">"guardian"</span>:<span class="ts">"Nicolás Orozco"</span>, <span class="tk">"amount"</span>:<span class="tn">15.0</span>,
+  <span class="tk">"method"</span>:<span class="ts">"yappy"</span>,          <span class="tc">// stripe|yappy</span>
+  <span class="tk">"plan"</span>:<span class="ts">"premium_monthly"</span>, <span class="tk">"status"</span>:<span class="ts">"confirmed"</span>,  <span class="tc">// confirmed|pending|failed|refunded</span>
+  <span class="tk">"date"</span>:<span class="ts">"2026-07-01 07:20"</span>, <span class="tk">"providerResponse"</span>:<span class="ts">"confirmed"</span>, <span class="tk">"paymentType"</span>:<span class="ts">"credit"</span> }</code></pre></div>
+        <h3>Registrar un pago</h3>
+        <div class="ep-h"><span class="m post">post</span><span class="path">/api/payments</span><span class="ret">→ <span class="badge">201</span> el <code>Payment</code> creado</span></div>
+        <div class="ep-h" style="margin-top:.7em"><span class="m get">get</span><span class="path">/api/payments/{id}</span><span class="ret">→ un <code>Payment</code></span></div>
+        <div class="single"><span class="cp" data-copy>Copiar</span><pre><code><span class="tc">// POST — guardianId y amount obligatorios. El plan se resuelve por monto (o pásalo con planId).</span>
+{ <span class="tk">"guardianId"</span>:<span class="ts">"3015d1d6-…"</span>, <span class="tk">"amount"</span>:<span class="tn">15.0</span>,
+  <span class="tk">"method"</span>:<span class="ts">"yappy"</span>,            <span class="tc">// stripe|yappy (def. yappy)</span>
+  <span class="tk">"billingCycle"</span>:<span class="ts">"monthly"</span>,   <span class="tc">// monthly|annual (def. monthly)</span>
+  <span class="tk">"status"</span>:<span class="ts">"confirmed"</span>,       <span class="tc">// def. confirmed → fija confirmed_at</span>
+  <span class="tk">"planId"</span>:null, <span class="tk">"txnId"</span>:null }   <span class="tc">// opcionales</span></code></pre></div>
+        <div class="adm"><div class="t">Catálogo de planes</div><div class="c"><p><code>GET /api/plans</code> devuelve los
+          planes de suscripción (<code>{ id, name, maxDependents, priceMonthly, priceAnnual }</code>) para poblar el
+          selector de plan al registrar un pago.</p></div></div>
       </section>
 
       <section id="centers">
-        <h2>Centers</h2>
+        <h2>Centers · CRUD</h2>
         <div class="ep-h"><span class="m get">get</span><span class="path">/api/centers</span>
-          <span class="ret">→ <code>Center[]</code></span></div>
-        <div class="single"><span class="cp" data-copy>Copiar</span><pre><code>[ { <span class="tk">"id"</span>:<span class="ts">"…"</span>, <span class="tk">"name"</span>:<span class="ts">"Hospital del Niño"</span>, <span class="tk">"type"</span>:<span class="ts">"Hospital"</span>,   <span class="tc">// Hospital|Clinic|Emergency</span>
-    <span class="tk">"city"</span>:<span class="ts">"Ciudad de Panamá"</span>, <span class="tk">"address"</span>:<span class="ts">"Av. Balboa"</span>,
-    <span class="tk">"phone"</span>:<span class="ts">"+507 512-9800"</span>, <span class="tk">"hours"</span>:<span class="ts">"24/7"</span>, <span class="tk">"recommended"</span>:true } ]</code></pre></div>
+          <span class="ret">→ envelope de <code>Center</code> · <code>?page ?page_limit</code></span></div>
+        <div class="single"><span class="cp" data-copy>Copiar</span><pre><code><span class="tc">// items[] →</span>
+{ <span class="tk">"id"</span>:<span class="ts">"…"</span>, <span class="tk">"name"</span>:<span class="ts">"Hospital del Niño"</span>, <span class="tk">"type"</span>:<span class="ts">"Hospital"</span>,   <span class="tc">// Hospital|Clinic|Emergency (derivado del nombre)</span>
+  <span class="tk">"city"</span>:<span class="ts">"Ciudad de Panamá"</span>, <span class="tk">"address"</span>:<span class="ts">"Av. Balboa"</span>,
+  <span class="tk">"phone"</span>:<span class="ts">"+507 512-9800"</span>, <span class="tk">"tier"</span>:<span class="ts">"publico_minsa"</span>, <span class="tk">"hours"</span>:<span class="ts">"24/7"</span>, <span class="tk">"recommended"</span>:true }</code></pre></div>
+        <h3>Crear / modificar / eliminar</h3>
+        <div class="ep-h"><span class="m post">post</span><span class="path">/api/centers</span><span class="ret">→ <span class="badge">201</span></span></div>
+        <div class="ep-h" style="margin-top:.7em"><span class="m get">get</span><span class="path">/api/centers/{id}</span></div>
+        <div class="ep-h" style="margin-top:.7em"><span class="m post" style="background:#d9822b">patch</span><span class="path">/api/centers/{id}</span></div>
+        <div class="ep-h" style="margin-top:.7em"><span class="m post" style="background:#b23b4a">del</span><span class="path">/api/centers/{id}</span><span class="ret">→ borrado suave (<code>active=0</code>)</span></div>
+        <div class="single"><span class="cp" data-copy>Copiar</span><pre><code><span class="tc">// POST — name y city obligatorios. tier: privado_tier1|css|publico_minsa (def. publico_minsa)</span>
+{ <span class="tk">"name"</span>:<span class="ts">"Clínica Hospital San Fernando"</span>, <span class="tk">"city"</span>:<span class="ts">"Ciudad de Panamá"</span>,
+  <span class="tk">"address"</span>:<span class="ts">"Vía España"</span>, <span class="tk">"phone"</span>:<span class="ts">"+507 305-6300"</span>,
+  <span class="tk">"tier"</span>:<span class="ts">"privado_tier1"</span>, <span class="tk">"recommended"</span>:true }
+<span class="tc">// PATCH — mismos campos, todos opcionales.</span></code></pre></div>
       </section>
 
       <section id="catalogs">
-        <h2>Insurances & Specialties</h2>
-        <div class="ep-h"><span class="m get">get</span><span class="path">/api/insurances</span><span class="ret">→ <code>{ id, name }[]</code></span></div>
-        <div class="ep-h" style="margin-top:1em"><span class="m get">get</span><span class="path">/api/specialties</span><span class="ret">→ <code>string[]</code></span></div>
-        <div class="single"><span class="cp" data-copy>Copiar</span><pre><code><span class="tc">// /api/insurances</span>   [ { <span class="tk">"id"</span>:<span class="ts">"…"</span>, <span class="tk">"name"</span>:<span class="ts">"MAPFRE"</span> }, … ]
-<span class="tc">// /api/specialties</span>  [ <span class="ts">"Pediatría"</span>, <span class="ts">"Neonatología"</span>, … ]</code></pre></div>
+        <h2>Insurances &amp; Specialties · CRUD</h2>
+        <h3>Insurances</h3>
+        <div class="ep-h"><span class="m get">get</span><span class="path">/api/insurances</span><span class="ret">→ envelope de <code>{ id, name }</code></span></div>
+        <div class="ep-h" style="margin-top:.7em"><span class="m post">post</span><span class="path">/api/insurances</span><span class="ret">→ <span class="badge">201</span> <code>{ id, name }</code></span></div>
+        <div class="ep-h" style="margin-top:.7em"><span class="m post" style="background:#d9822b">patch</span><span class="path">/api/insurances/{id}</span></div>
+        <div class="ep-h" style="margin-top:.7em"><span class="m post" style="background:#b23b4a">del</span><span class="path">/api/insurances/{id}</span><span class="ret">→ borrado suave</span></div>
+        <div class="single"><span class="cp" data-copy>Copiar</span><pre><code><span class="tc">// POST</span>   { <span class="tk">"name"</span>:<span class="ts">"MAPFRE"</span> }        <span class="tc">// nombre duplicado → 409</span>
+<span class="tc">// PATCH</span>  { <span class="tk">"name"</span>:<span class="ts">"MAPFRE Panamá"</span>, <span class="tk">"active"</span>:true }</code></pre></div>
+        <h3 style="margin-top:1.4em">Specialties</h3>
+        <div class="ep-h"><span class="m get">get</span><span class="path">/api/specialties</span><span class="ret">→ <code>string[]</code> (para selects)</span></div>
+        <div class="ep-h" style="margin-top:.7em"><span class="m get">get</span><span class="path">/api/specialties/all</span><span class="ret">→ envelope de <code>{ id, name }</code> (para administrar)</span></div>
+        <div class="ep-h" style="margin-top:.7em"><span class="m post">post</span><span class="path">/api/specialties</span><span class="ret">→ <span class="badge">201</span> <code>{ id, name }</code></span></div>
+        <div class="ep-h" style="margin-top:.7em"><span class="m post" style="background:#d9822b">patch</span><span class="path">/api/specialties/{id}</span></div>
+        <div class="ep-h" style="margin-top:.7em"><span class="m post" style="background:#b23b4a">del</span><span class="path">/api/specialties/{id}</span></div>
+        <div class="single"><span class="cp" data-copy>Copiar</span><pre><code><span class="tc">// /api/specialties</span>      [ <span class="ts">"Pediatría"</span>, <span class="ts">"Neonatología"</span>, … ]
+<span class="tc">// /api/specialties/all</span>  { <span class="tk">"items"</span>:[ { <span class="tk">"id"</span>:<span class="tn">3</span>, <span class="tk">"name"</span>:<span class="ts">"Pediatría"</span> }, … ], <span class="tk">"total"</span>:… }
+<span class="tc">// POST/PATCH</span>  { <span class="tk">"name"</span>:<span class="ts">"Cardiología pediátrica"</span> }   <span class="tc">// DELETE en uso → 409</span></code></pre></div>
       </section>
 
       <section id="usage">
