@@ -52,10 +52,13 @@ Todas las listas devuelven un **envelope** y aceptan `?page` (def. 1) y `?page_l
 | `GET /api/stats/*` | KPIs y series (cacheados ~60 s) | agregados |
 
 **Campos del acudiente (POST/PATCH):** `name, phone, email, relationship, country, city,
-province, status, plan, insuranceId, policyNumber`. Notas: `country` es informativo (el país
-se infiere del prefijo del teléfono); `plan` (`free|premium_monthly|premium_annual`) se
-materializa como un pago confirmado en `payments`; el seguro (`insuranceId`+`policyNumber`)
-se propaga a los pacientes del acudiente (un acudiente sin pacientes aún no lo almacena).
+province, status, plan, insuranceId, policyNumber`. Notas: `country` es editable y persistente
+(columna `guardians.country`; en acudientes antiguos sin país se infiere del teléfono); `plan`
+(`free|premium_monthly|premium_annual`) se materializa como un pago confirmado en `payments`;
+el seguro (`insuranceId`+`policyNumber`) es del **acudiente** (`guardians.insurance_company_id`,
+la póliza suele ser del padre) — se guarda al crear sin depender de pacientes; `insuranceId:0` lo
+quita. Cada paciente conserva además su propio seguro opcional. Requiere la migración
+`2bd6cf1a88c1` en la BD del bot.
 
 **Cache:** las estadísticas y los consumos se cachean en memoria ~60 s por instancia.
 

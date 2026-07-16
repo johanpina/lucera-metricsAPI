@@ -333,21 +333,27 @@ def _children_for(gids: list[str]) -> dict:
 
 
 def _guardian_row(g: dict, kids: list[dict]) -> dict:
-    insurance = next((k["insurance"] for k in kids if k.get("insurance")), None)
+    insurance = (
+        {"id": g["ins_id"], "name": g["ins_name"], "policyNumber": g.get("policy") or None}
+        if g.get("ins_id") else None
+    )
     return {
         "id": g["id"], "phone": g["phone"], "email": g["email"], "name": g["name"],
-        "relationship": REL_OUT.get(g["rel"], "guardian"), "country": _country(g["phone"]),
+        "relationship": REL_OUT.get(g["rel"], "guardian"),
+        "country": g.get("country") or _country(g["phone"]),   # nativo; fallback al prefijo del teléfono
         "city": g["city"] or g["province"] or "", "status": GSTATUS_OUT.get(g["ustatus"], "active"),
         "plan": _plan(g["cycle"]), "insurance": insurance, "registeredAt": _clean(g["created_at"]),
         "children": kids,
     }
 
 
-_G_SELECT = """SELECT g.id, g.full_name AS name, g.relationship_type AS rel, g.city, g.province,
+_G_SELECT = """SELECT g.id, g.full_name AS name, g.relationship_type AS rel, g.country, g.city, g.province,
+    g.insurance_company_id AS ins_id, ic.name AS ins_name, g.policy_number AS policy,
     u.phone_number AS phone, u.email, u.status AS ustatus, u.created_at,
     (SELECT p.billing_cycle FROM payments p WHERE p.user_id=u.id AND p.status='confirmed'
       ORDER BY p.confirmed_at DESC LIMIT 1) AS cycle
-    FROM guardians g JOIN users u ON u.id=g.user_id"""
+    FROM guardians g JOIN users u ON u.id=g.user_id
+    LEFT JOIN insurance_companies ic ON ic.id=g.insurance_company_id"""
 
 
 @app.get("/api/guardians", dependencies=[Depends(require_auth)])
@@ -403,36 +409,18 @@ def _apply_plan(uid: str, plan: str | None) -> None:
           (str(uuid.uuid4()), uid, prem[0]["id"], cycle, amount))
 
 
-# El seguro/póliza viven en los pacientes (dependents). El seguro del acudiente se
-# propaga a todos sus pacientes. Un acudiente recién creado sin pacientes aún no lo
-# almacena hasta que agregues pacientes (o los edites con POST/PATCH /api/patients).
-def _apply_guardian_insurance(gid: str, ins_id, policy) -> int:
-    sets, args = [], []
-    if ins_id is not None:
-        sets.append("insurance_company_id=%s"); args.append(ins_id or None)
-    if policy is not None:
-        sets.append("policy_number=%s"); args.append(policy or None)
-    if not sets:
-        return 0
-    return _exec(
-        f"UPDATE dependents SET {', '.join(sets)} WHERE id IN "
-        "(SELECT dependent_id FROM guardian_dependent WHERE guardian_id=%s)",
-        tuple(args + [gid]),
-    )
-
-
 class GuardianCreate(BaseModel):
     name: str
     phone: str
     email: str
     relationship: str | None = None
-    country: str | None = None       # informativo: el país se infiere del prefijo del teléfono
+    country: str | None = None       # país editable (guardians.country)
     city: str | None = None
     province: str | None = None
     address: str | None = None
     status: str | None = None        # active|suspended|inactive (def. active)
     plan: str | None = None          # free|premium_monthly|premium_annual
-    insuranceId: int | None = None   # se aplica a los pacientes del acudiente
+    insuranceId: int | None = None   # seguro del acudiente (guardians.insurance_company_id)
     policyNumber: str | None = None
 
 
@@ -446,12 +434,13 @@ def guardian_create(body: GuardianCreate):
         ("""INSERT INTO users (id, email, phone_number, password_hash, role, status, is_active, created_at, updated_at)
              VALUES (%s,%s,%s,%s,'guardian',%s,%s,NOW(),NOW())""",
          (uid, body.email.strip().lower(), phone, "!dashboard-created", status, 0 if status != "active" else 1)),
-        ("""INSERT INTO guardians (id, user_id, full_name, relationship_type, address, city, province, created_at)
-             VALUES (%s,%s,%s,%s,%s,%s,%s,NOW())""",
-         (gid, uid, body.name.strip(), rel, body.address, body.city, body.province)),
+        ("""INSERT INTO guardians (id, user_id, full_name, relationship_type, address, country, city, province,
+             insurance_company_id, policy_number, created_at)
+             VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,NOW())""",
+         (gid, uid, body.name.strip(), rel, body.address, body.country, body.city, body.province,
+          body.insuranceId, body.policyNumber)),
     ]))
     _apply_plan(uid, body.plan)
-    _apply_guardian_insurance(gid, body.insuranceId, body.policyNumber)
     return _one_guardian(gid)
 
 
@@ -463,13 +452,13 @@ def guardian_get(gid: str):
 class GuardianUpdate(BaseModel):
     name: str | None = None
     email: str | None = None
-    country: str | None = None       # informativo: el país se infiere del teléfono
+    country: str | None = None       # país editable (guardians.country)
     city: str | None = None
     province: str | None = None
     relationship: str | None = None
     status: str | None = None
     plan: str | None = None          # free|premium_monthly|premium_annual
-    insuranceId: int | None = None   # se aplica a los pacientes del acudiente
+    insuranceId: int | None = None   # seguro del acudiente (guardians.insurance_company_id)
     policyNumber: str | None = None
 
 
@@ -482,6 +471,8 @@ def guardian_update(gid: str, body: GuardianUpdate):
     gsets, gargs = [], []
     if body.name is not None:
         gsets.append("full_name=%s"); gargs.append(body.name.strip())
+    if body.country is not None:
+        gsets.append("country=%s"); gargs.append(body.country.strip() or None)
     if body.city is not None:
         gsets.append("city=%s"); gargs.append(body.city.strip())
     if body.province is not None:
@@ -491,8 +482,12 @@ def guardian_update(gid: str, body: GuardianUpdate):
         if not rel:
             raise HTTPException(status_code=422, detail="relationship must be mother|father|guardian|grandparent.")
         gsets.append("relationship_type=%s"); gargs.append(rel)
+    if body.insuranceId is not None:
+        gsets.append("insurance_company_id=%s"); gargs.append(body.insuranceId or None)
+    if body.policyNumber is not None:
+        gsets.append("policy_number=%s"); gargs.append(body.policyNumber or None)
     if gsets:
-        _exec(f"UPDATE guardians SET {', '.join(gsets)} WHERE id=%s", tuple(gargs + [gid]))
+        _guard_integrity(lambda: _exec(f"UPDATE guardians SET {', '.join(gsets)} WHERE id=%s", tuple(gargs + [gid])))
     usets, uargs = [], []
     if body.email is not None:
         usets.append("email=%s"); uargs.append(body.email.strip())
@@ -505,7 +500,6 @@ def guardian_update(gid: str, body: GuardianUpdate):
     if usets:
         _exec(f"UPDATE users SET {', '.join(usets)}, updated_at=NOW() WHERE id=%s", tuple(uargs + [uid]))
     _apply_plan(uid, body.plan)
-    _apply_guardian_insurance(gid, body.insuranceId, body.policyNumber)
     return _one_guardian(gid)
 
 

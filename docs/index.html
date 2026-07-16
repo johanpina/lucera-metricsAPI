@@ -282,10 +282,10 @@ guardians = requests.get(f<span class="ts">"{base}/api/guardians"</span>, header
         <div class="single"><span class="cp" data-copy>Copiar</span><pre><code><span class="tc">// POST — crea el acudiente (y su cuenta de usuario). name, phone y email obligatorios.</span>
 { <span class="tk">"name"</span>:<span class="ts">"Ana Muschett"</span>, <span class="tk">"phone"</span>:<span class="ts">"+507 6234-2370"</span>, <span class="tk">"email"</span>:<span class="ts">"ana@…"</span>,
   <span class="tk">"relationship"</span>:<span class="ts">"mother"</span>,      <span class="tc">// mother|father|guardian|grandparent</span>
-  <span class="tk">"country"</span>:<span class="ts">"Panama"</span>, <span class="tk">"city"</span>:<span class="ts">"Ciudad de Panamá"</span>, <span class="tk">"province"</span>:<span class="ts">"Panamá"</span>,
+  <span class="tk">"country"</span>:<span class="ts">"Panamá"</span>, <span class="tk">"city"</span>:<span class="ts">"Ciudad de Panamá"</span>, <span class="tk">"province"</span>:<span class="ts">"Panamá"</span>,
   <span class="tk">"status"</span>:<span class="ts">"active"</span>,            <span class="tc">// active|suspended|inactive (def. active)</span>
   <span class="tk">"plan"</span>:<span class="ts">"premium_monthly"</span>,   <span class="tc">// free|premium_monthly|premium_annual → registra el pago</span>
-  <span class="tk">"insuranceId"</span>:<span class="tn">10</span>, <span class="tk">"policyNumber"</span>:<span class="ts">"POL-123"</span> }  <span class="tc">// se aplica a los pacientes del acudiente</span>
+  <span class="tk">"insuranceId"</span>:<span class="tn">10</span>, <span class="tk">"policyNumber"</span>:<span class="ts">"POL-123"</span> }  <span class="tc">// seguro del acudiente (insuranceId:0 lo quita)</span>
 <span class="tc">// email o phone duplicado → 409</span>
 
 <span class="tc">// PATCH — todos los campos opcionales; solo manda lo que cambies</span>
@@ -296,9 +296,9 @@ guardians = requests.get(f<span class="ts">"{base}/api/guardians"</span>, header
 <span class="tc">// DELETE es un borrado suave: desactiva la cuenta (deja de aparecer en la lista,</span>
 <span class="tc">// conserva el historial de chats/pagos). → { "deleted": true, "id": "…" }</span></code></pre></div>
         <div class="adm"><div class="t">Notas de campos</div><div class="c"><ul>
-          <li><b>country</b>: informativo — el país real se infiere del prefijo del teléfono (507→Panama, 57→Colombia).</li>
+          <li><b>country</b>: editable y persistente (columna del acudiente). En acudientes antiguos sin país se infiere del prefijo del teléfono (507→Panamá, 57→Colombia).</li>
           <li><b>plan</b>: no es una columna; se materializa como un pago confirmado. <code>premium_*</code> registra el pago; <code>free</code> anula los pagos confirmados previos.</li>
-          <li><b>insuranceId · policyNumber</b>: el seguro vive en los pacientes; se propaga a todos los pacientes del acudiente. Un acudiente recién creado <b>sin pacientes</b> aún no lo almacena (aparecerá al agregar pacientes, o edítalo con <code>POST/PATCH /api/patients</code>).</li>
+          <li><b>insuranceId · policyNumber</b>: el seguro es del <b>acudiente</b> (lo natural: la póliza suele ser del padre). Se guarda al crear, sin depender de pacientes. Envía <code>insuranceId:0</code> para quitarlo. Cada paciente conserva además su propio seguro opcional.</li>
         </ul></div></div>
       </section>
 
