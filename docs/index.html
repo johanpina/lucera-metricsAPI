@@ -242,6 +242,16 @@ POST /portal/register  { <span class="tk">"token"</span>:<span class="ts">"eyJ�
         <div class="ep-h"><span class="m post">post</span><span class="path">/api/guardians/{id}/portal-password</span>
           <span class="ret">→ <code>{ ok, id }</code> · token admin</span></div>
         <div class="single"><span class="cp" data-copy>Copiar</span><pre><code>{ <span class="tk">"password"</span>:<span class="ts">"MiPortal2026!"</span> }   <span class="tc">// mín. 6 caracteres; PBKDF2</span></code></pre></div>
+        <h3>Acudientes ya existentes</h3>
+        <p>Los acudientes creados antes del portal <b>no tienen contraseña</b> (no hay clave por defecto:
+          sería inseguro). Para saber quién ya la tiene, cada <code>Guardian</code> trae
+          <code>portalEnabled</code> (<code>true/false</code>). Para onboardearlos en lote, genera sus
+          links de registro:</p>
+        <div class="ep-h"><span class="m get">get</span><span class="path">/api/portal-links</span>
+          <span class="ret">→ envelope de <code>{ guardianId, name, phone, hasPassword, token, url }</code> · token admin</span></div>
+        <div class="single"><span class="cp" data-copy>Copiar</span><pre><code><span class="tc">// ?only_missing=true (def) → solo los que aún NO tienen clave · ?page ?page_limit</span>
+GET /api/portal-links?only_missing=true
+<span class="tc">// el bot/dashboard envía cada `url` por WhatsApp; el acudiente fija su clave.</span></code></pre></div>
         <h3>Endpoints del portal (token de acudiente)</h3>
         <div class="tw"><table>
           <tr><th>Ruta</th><th>Devuelve (solo lo del acudiente)</th></tr>

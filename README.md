@@ -31,6 +31,7 @@ Login aparte para que un acudiente vea **solo sus propios datos** (teléfono + c
 ```
 # Registro: el acudiente fija SU propia clave desde un form del dashboard (link firmado por el bot)
 POST /api/guardians/{id}/portal-link                       # admin → { token, url, expiresInHours }
+GET  /api/portal-links?only_missing=true                   # admin → links en lote (onboarding masivo)
 GET  /portal/register/{token}                              # público → precarga el form
 POST /portal/register  { token, password, email? }        # público → fija la clave + activa
 # Alternativa: el admin la fija directo

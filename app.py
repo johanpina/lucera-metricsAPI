@@ -448,6 +448,7 @@ def _guardian_row(g: dict, kids: list[dict]) -> dict:
         "country": g.get("country") or _country(g["phone"]),   # nativo; fallback al prefijo del teléfono
         "city": g["city"] or g["province"] or "", "status": GSTATUS_OUT.get(g["ustatus"], "active"),
         "plan": _plan(g["cycle"]), "insurance": insurance, "registeredAt": _clean(g["created_at"]),
+        "portalEnabled": bool(g.get("portal_enabled")),   # ¿ya fijó contraseña del portal?
         "children": kids,
     }
 
@@ -455,6 +456,7 @@ def _guardian_row(g: dict, kids: list[dict]) -> dict:
 _G_SELECT = """SELECT g.id, g.full_name AS name, g.relationship_type AS rel, g.country, g.city, g.province,
     g.insurance_company_id AS ins_id, ic.name AS ins_name, g.policy_number AS policy,
     u.phone_number AS phone, u.email, u.status AS ustatus, u.created_at,
+    LEFT(u.password_hash, 6) = 'pbkdf2' AS portal_enabled,
     (SELECT p.billing_cycle FROM payments p WHERE p.user_id=u.id AND p.status='confirmed'
       ORDER BY p.confirmed_at DESC LIMIT 1) AS cycle
     FROM guardians g JOIN users u ON u.id=g.user_id
@@ -645,6 +647,30 @@ def guardian_portal_link(gid: str):
     token = _make_register_token(gid)
     url = f"{PORTAL_REGISTER_URL}?token={token}" if PORTAL_REGISTER_URL else None
     return {"token": token, "url": url, "expiresInHours": REGISTER_TTL // 3600}
+
+
+@app.get("/api/portal-links", dependencies=[Depends(require_auth)])
+def portal_links_bulk(page: int = 1, page_limit: int = 50, only_missing: bool = True):
+    """Admin: genera en lote los links de registro del portal (para onboardear a los
+    acudientes YA creados). Por defecto solo los que aún no tienen contraseña (only_missing)."""
+    page, page_limit, off = _pag(page, page_limit)
+    where = "WHERE u.deleted_at IS NULL"
+    if only_missing:
+        where += " AND LEFT(u.password_hash, 6) <> 'pbkdf2'"
+    total = _q(f"SELECT COUNT(*) c FROM guardians g JOIN users u ON u.id=g.user_id {where}")[0]["c"]
+    rows = _q(f"""SELECT g.id, g.full_name AS name, u.phone_number AS phone,
+                     LEFT(u.password_hash, 6) = 'pbkdf2' AS has_pw
+                  FROM guardians g JOIN users u ON u.id=g.user_id {where}
+                  ORDER BY g.full_name LIMIT %s OFFSET %s""", (page_limit, off))
+    items = []
+    for r in rows:
+        tok = _make_register_token(r["id"])
+        items.append({
+            "guardianId": r["id"], "name": r["name"], "phone": r["phone"],
+            "hasPassword": bool(r["has_pw"]),
+            "token": tok, "url": (f"{PORTAL_REGISTER_URL}?token={tok}" if PORTAL_REGISTER_URL else None),
+        })
+    return _envelope(items, page, page_limit, total)
 
 
 # ── Patients (CRUD) ──────────────────────────────────────────────────────────
