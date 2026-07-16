@@ -293,7 +293,10 @@ def _child(d: dict) -> dict:
         "bloodType": BLOOD_OUT.get(d.get("blood_type"), None),
         "weightKg": float(d["weight_kg"]) if d.get("weight_kg") is not None else None,
         "conditions": _split(d.get("known_conditions")), "allergies": _split(d.get("allergies")),
-        "insurance": ({"id": d["ins_id"], "name": d["ins_name"]} if d.get("ins_id") else None),
+        "insurance": (
+            {"id": d["ins_id"], "name": d["ins_name"], "policyNumber": d.get("policy") or None}
+            if d.get("ins_id") else None
+        ),
     }
 
 
@@ -316,7 +319,8 @@ def _children_for(gids: list[str]) -> dict:
     ph = ",".join(["%s"] * len(gids))
     deps = _q(
         f"""SELECT gd.guardian_id, d.id, d.full_name AS name, d.birthday, d.blood_type, d.weight_kg,
-               d.known_conditions, d.allergies, d.insurance_company_id AS ins_id, ic.name AS ins_name
+               d.known_conditions, d.allergies, d.insurance_company_id AS ins_id, ic.name AS ins_name,
+               d.policy_number AS policy
             FROM dependents d JOIN guardian_dependent gd ON gd.dependent_id=d.id
             LEFT JOIN insurance_companies ic ON ic.id=d.insurance_company_id
             WHERE gd.guardian_id IN ({ph})""",
@@ -368,29 +372,86 @@ def _one_guardian(gid: str) -> dict:
     return _guardian_row(gs[0], kids.get(gid, []))
 
 
+# El "plan" no es una columna: se deriva del último pago confirmado (billing_cycle).
+# Fijarlo desde el panel = registrar/anular un pago confirmado del acudiente.
+def _current_plan(uid: str) -> str:
+    r = _q("SELECT billing_cycle FROM payments WHERE user_id=%s AND status='confirmed' "
+           "ORDER BY confirmed_at DESC LIMIT 1", (uid,))
+    return _plan(r[0]["billing_cycle"]) if r else "free"
+
+
+def _apply_plan(uid: str, plan: str | None) -> None:
+    if plan is None:
+        return
+    plan = plan.lower()
+    if plan not in ("free", "premium_monthly", "premium_annual"):
+        raise HTTPException(status_code=422, detail="plan must be free|premium_monthly|premium_annual.")
+    if _current_plan(uid) == plan:
+        return  # sin cambios
+    # anula cualquier pago confirmado previo (→ vuelve a free)
+    _exec("UPDATE payments SET status='refunded' WHERE user_id=%s AND status='confirmed'", (uid,))
+    if plan == "free":
+        return
+    cycle = "annual" if plan == "premium_annual" else "monthly"
+    prem = _q("SELECT id, price_monthly_usd, price_annual_usd FROM subscription_plans "
+              "WHERE active=1 AND price_monthly_usd>0 ORDER BY price_monthly_usd LIMIT 1")
+    if not prem:
+        raise HTTPException(status_code=409, detail="No active premium plan to assign.")
+    amount = prem[0]["price_annual_usd"] if cycle == "annual" else prem[0]["price_monthly_usd"]
+    _exec("""INSERT INTO payments (id, user_id, plan_id, billing_cycle, provider, amount_usd, status, created_at, confirmed_at)
+             VALUES (%s,%s,%s,%s,'tilopay',%s,'confirmed',NOW(),NOW())""",
+          (str(uuid.uuid4()), uid, prem[0]["id"], cycle, amount))
+
+
+# El seguro/póliza viven en los pacientes (dependents). El seguro del acudiente se
+# propaga a todos sus pacientes. Un acudiente recién creado sin pacientes aún no lo
+# almacena hasta que agregues pacientes (o los edites con POST/PATCH /api/patients).
+def _apply_guardian_insurance(gid: str, ins_id, policy) -> int:
+    sets, args = [], []
+    if ins_id is not None:
+        sets.append("insurance_company_id=%s"); args.append(ins_id or None)
+    if policy is not None:
+        sets.append("policy_number=%s"); args.append(policy or None)
+    if not sets:
+        return 0
+    return _exec(
+        f"UPDATE dependents SET {', '.join(sets)} WHERE id IN "
+        "(SELECT dependent_id FROM guardian_dependent WHERE guardian_id=%s)",
+        tuple(args + [gid]),
+    )
+
+
 class GuardianCreate(BaseModel):
     name: str
     phone: str
     email: str
     relationship: str | None = None
+    country: str | None = None       # informativo: el país se infiere del prefijo del teléfono
     city: str | None = None
     province: str | None = None
     address: str | None = None
+    status: str | None = None        # active|suspended|inactive (def. active)
+    plan: str | None = None          # free|premium_monthly|premium_annual
+    insuranceId: int | None = None   # se aplica a los pacientes del acudiente
+    policyNumber: str | None = None
 
 
 @app.post("/api/guardians", dependencies=[Depends(require_auth)], status_code=201)
 def guardian_create(body: GuardianCreate):
     rel = REL_IN.get((body.relationship or "guardian").lower(), "tutor")
+    status = STATUS_IN.get((body.status or "active").lower(), "active")
     phone = body.phone.strip().lstrip("+")
     uid, gid = str(uuid.uuid4()), str(uuid.uuid4())
     _guard_integrity(lambda: _tx([
         ("""INSERT INTO users (id, email, phone_number, password_hash, role, status, is_active, created_at, updated_at)
-             VALUES (%s,%s,%s,%s,'guardian','active',1,NOW(),NOW())""",
-         (uid, body.email.strip().lower(), phone, "!dashboard-created")),
+             VALUES (%s,%s,%s,%s,'guardian',%s,%s,NOW(),NOW())""",
+         (uid, body.email.strip().lower(), phone, "!dashboard-created", status, 0 if status != "active" else 1)),
         ("""INSERT INTO guardians (id, user_id, full_name, relationship_type, address, city, province, created_at)
              VALUES (%s,%s,%s,%s,%s,%s,%s,NOW())""",
          (gid, uid, body.name.strip(), rel, body.address, body.city, body.province)),
     ]))
+    _apply_plan(uid, body.plan)
+    _apply_guardian_insurance(gid, body.insuranceId, body.policyNumber)
     return _one_guardian(gid)
 
 
@@ -402,9 +463,14 @@ def guardian_get(gid: str):
 class GuardianUpdate(BaseModel):
     name: str | None = None
     email: str | None = None
+    country: str | None = None       # informativo: el país se infiere del teléfono
     city: str | None = None
+    province: str | None = None
     relationship: str | None = None
     status: str | None = None
+    plan: str | None = None          # free|premium_monthly|premium_annual
+    insuranceId: int | None = None   # se aplica a los pacientes del acudiente
+    policyNumber: str | None = None
 
 
 @app.patch("/api/guardians/{gid}", dependencies=[Depends(require_auth)])
@@ -418,6 +484,8 @@ def guardian_update(gid: str, body: GuardianUpdate):
         gsets.append("full_name=%s"); gargs.append(body.name.strip())
     if body.city is not None:
         gsets.append("city=%s"); gargs.append(body.city.strip())
+    if body.province is not None:
+        gsets.append("province=%s"); gargs.append(body.province.strip())
     if body.relationship is not None:
         rel = REL_IN.get(body.relationship.lower())
         if not rel:
@@ -433,8 +501,11 @@ def guardian_update(gid: str, body: GuardianUpdate):
         if not st:
             raise HTTPException(status_code=422, detail="status must be active|suspended|inactive.")
         usets.append("status=%s"); uargs.append(st)
+        usets.append("is_active=%s"); uargs.append(1 if st == "active" else 0)
     if usets:
         _exec(f"UPDATE users SET {', '.join(usets)}, updated_at=NOW() WHERE id=%s", tuple(uargs + [uid]))
+    _apply_plan(uid, body.plan)
+    _apply_guardian_insurance(gid, body.insuranceId, body.policyNumber)
     return _one_guardian(gid)
 
 
@@ -451,7 +522,7 @@ def guardian_delete(gid: str):
 # ── Patients (CRUD) ──────────────────────────────────────────────────────────
 _P_SELECT = """SELECT d.id, d.full_name AS name, d.birthday, d.css_number AS national_id,
     d.blood_type, d.weight_kg, d.known_conditions, d.allergies,
-    d.insurance_company_id AS ins_id, ic.name AS ins_name,
+    d.insurance_company_id AS ins_id, ic.name AS ins_name, d.policy_number AS policy,
     g.id AS guardian_id, g.full_name AS guardian, u.phone_number AS phone, u.status AS ustatus,
     (SELECT MAX(cs.opened_at) FROM chat_sessions cs WHERE cs.dependent_id=d.id) AS last
     FROM dependents d JOIN guardian_dependent gd ON gd.dependent_id=d.id
@@ -465,7 +536,10 @@ def _patient_row(r: dict) -> dict:
         "birthDate": _clean(r["birthday"]), "bloodType": BLOOD_OUT.get(r.get("blood_type"), None),
         "weightKg": float(r["weight_kg"]) if r.get("weight_kg") is not None else None,
         "conditions": _split(r.get("known_conditions")), "allergies": _split(r.get("allergies")),
-        "insurance": ({"id": r["ins_id"], "name": r["ins_name"]} if r.get("ins_id") else None),
+        "insurance": (
+            {"id": r["ins_id"], "name": r["ins_name"], "policyNumber": r.get("policy") or None}
+            if r.get("ins_id") else None
+        ),
         "guardianId": r["guardian_id"], "guardian": r["guardian"], "phone": r["phone"],
         "status": PSTATUS_OUT.get(r["ustatus"], "pending"),
         "lastConsultation": _clean(r["last"]) if r["last"] else "",
@@ -503,6 +577,7 @@ class PatientCreate(BaseModel):
     conditions: list[str] | None = None
     allergies: list[str] | None = None
     insuranceId: int | None = None
+    policyNumber: str | None = None
 
 
 class PatientUpdate(BaseModel):
@@ -513,6 +588,7 @@ class PatientUpdate(BaseModel):
     conditions: list[str] | None = None
     allergies: list[str] | None = None
     insuranceId: int | None = None
+    policyNumber: str | None = None
 
 
 @app.post("/api/patients", dependencies=[Depends(require_auth)], status_code=201)
@@ -527,11 +603,11 @@ def patient_create(body: PatientCreate):
     pid = str(uuid.uuid4())
     _tx([
         ("""INSERT INTO dependents (id, full_name, birthday, blood_type, weight_kg, weight_input_unit,
-             known_conditions, allergies, insurance_company_id, created_at)
-             VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,NOW())""",
+             known_conditions, allergies, insurance_company_id, policy_number, created_at)
+             VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,NOW())""",
          (pid, body.name.strip(), bday, blood, body.weightKg, "kg" if body.weightKg is not None else None,
           "; ".join(body.conditions) if body.conditions else None,
-          "; ".join(body.allergies) if body.allergies else None, body.insuranceId)),
+          "; ".join(body.allergies) if body.allergies else None, body.insuranceId, body.policyNumber)),
         ("INSERT INTO guardian_dependent (guardian_id, dependent_id, is_primary) VALUES (%s,%s,%s)",
          (body.guardianId, pid, 1)),
     ])
@@ -561,6 +637,8 @@ def patient_update(pid: str, body: PatientUpdate):
         sets.append("allergies=%s"); args.append("; ".join(body.allergies) or None)
     if body.insuranceId is not None:
         sets.append("insurance_company_id=%s"); args.append(body.insuranceId)
+    if body.policyNumber is not None:
+        sets.append("policy_number=%s"); args.append(body.policyNumber or None)
     if sets:
         _exec(f"UPDATE dependents SET {', '.join(sets)} WHERE id=%s", tuple(args + [pid]))
     return patient_get(pid)

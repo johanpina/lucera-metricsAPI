@@ -268,11 +268,11 @@ guardians = requests.get(f<span class="ts">"{base}/api/guardians"</span>, header
   <span class="tk">"country"</span>:<span class="ts">"Panama"</span>, <span class="tk">"city"</span>:<span class="ts">"Ciudad de Panamá"</span>,
   <span class="tk">"status"</span>:<span class="ts">"active"</span>,       <span class="tc">// active|suspended|inactive</span>
   <span class="tk">"plan"</span>:<span class="ts">"free"</span>,           <span class="tc">// free|premium_monthly|premium_annual</span>
-  <span class="tk">"insurance"</span>:{ <span class="tk">"id"</span>:<span class="tn">10</span>, <span class="tk">"name"</span>:<span class="ts">"Acerta"</span> },  <span class="tc">// o null si ningún hijo tiene seguro</span>
+  <span class="tk">"insurance"</span>:{ <span class="tk">"id"</span>:<span class="tn">10</span>, <span class="tk">"name"</span>:<span class="ts">"Acerta"</span>, <span class="tk">"policyNumber"</span>:<span class="ts">"POL-123"</span> },  <span class="tc">// o null si ningún hijo tiene seguro</span>
   <span class="tk">"registeredAt"</span>:<span class="ts">"2026-07-01 07:04"</span>,
   <span class="tk">"children"</span>:[ { <span class="tk">"id"</span>:<span class="ts">"…"</span>, <span class="tk">"name"</span>:<span class="ts">"Lucas Muschett"</span>, <span class="tk">"birthDate"</span>:<span class="ts">"2022-04-05"</span>,
       <span class="tk">"bloodType"</span>:null, <span class="tk">"weightKg"</span>:<span class="tn">16.5</span>, <span class="tk">"conditions"</span>:[], <span class="tk">"allergies"</span>:[<span class="ts">"Maní"</span>],
-      <span class="tk">"insurance"</span>:{ <span class="tk">"id"</span>:<span class="tn">10</span>, <span class="tk">"name"</span>:<span class="ts">"Acerta"</span> } } ]
+      <span class="tk">"insurance"</span>:{ <span class="tk">"id"</span>:<span class="tn">10</span>, <span class="tk">"name"</span>:<span class="ts">"Acerta"</span>, <span class="tk">"policyNumber"</span>:<span class="ts">"POL-123"</span> } } ]
 }</code></pre></div>
         <h3>Crear / modificar / eliminar</h3>
         <div class="ep-h"><span class="m post">post</span><span class="path">/api/guardians</span><span class="ret">→ <span class="badge">201</span> el <code>Guardian</code> creado</span></div>
@@ -281,15 +281,25 @@ guardians = requests.get(f<span class="ts">"{base}/api/guardians"</span>, header
         <div class="ep-h" style="margin-top:.7em"><span class="m post" style="background:#b23b4a">del</span><span class="path">/api/guardians/{id}</span><span class="ret">→ <code>{ deleted, id }</code></span></div>
         <div class="single"><span class="cp" data-copy>Copiar</span><pre><code><span class="tc">// POST — crea el acudiente (y su cuenta de usuario). name, phone y email obligatorios.</span>
 { <span class="tk">"name"</span>:<span class="ts">"Ana Muschett"</span>, <span class="tk">"phone"</span>:<span class="ts">"+507 6234-2370"</span>, <span class="tk">"email"</span>:<span class="ts">"ana@…"</span>,
-  <span class="tk">"relationship"</span>:<span class="ts">"mother"</span>, <span class="tk">"city"</span>:<span class="ts">"Ciudad de Panamá"</span>, <span class="tk">"province"</span>:<span class="ts">"Panamá"</span> }
+  <span class="tk">"relationship"</span>:<span class="ts">"mother"</span>,      <span class="tc">// mother|father|guardian|grandparent</span>
+  <span class="tk">"country"</span>:<span class="ts">"Panama"</span>, <span class="tk">"city"</span>:<span class="ts">"Ciudad de Panamá"</span>, <span class="tk">"province"</span>:<span class="ts">"Panamá"</span>,
+  <span class="tk">"status"</span>:<span class="ts">"active"</span>,            <span class="tc">// active|suspended|inactive (def. active)</span>
+  <span class="tk">"plan"</span>:<span class="ts">"premium_monthly"</span>,   <span class="tc">// free|premium_monthly|premium_annual → registra el pago</span>
+  <span class="tk">"insuranceId"</span>:<span class="tn">10</span>, <span class="tk">"policyNumber"</span>:<span class="ts">"POL-123"</span> }  <span class="tc">// se aplica a los pacientes del acudiente</span>
 <span class="tc">// email o phone duplicado → 409</span>
 
 <span class="tc">// PATCH — todos los campos opcionales; solo manda lo que cambies</span>
 { <span class="tk">"name"</span>:<span class="ts">"Ana M. Muschett"</span>, <span class="tk">"email"</span>:<span class="ts">"nueva@…"</span>, <span class="tk">"city"</span>:<span class="ts">"Colón"</span>,
-  <span class="tk">"relationship"</span>:<span class="ts">"mother"</span>, <span class="tk">"status"</span>:<span class="ts">"suspended"</span> }   <span class="tc">// status: active|suspended|inactive</span>
+  <span class="tk">"relationship"</span>:<span class="ts">"mother"</span>, <span class="tk">"status"</span>:<span class="ts">"suspended"</span>,
+  <span class="tk">"plan"</span>:<span class="ts">"free"</span>, <span class="tk">"insuranceId"</span>:<span class="tn">12</span>, <span class="tk">"policyNumber"</span>:<span class="ts">"POL-999"</span> }
 
 <span class="tc">// DELETE es un borrado suave: desactiva la cuenta (deja de aparecer en la lista,</span>
 <span class="tc">// conserva el historial de chats/pagos). → { "deleted": true, "id": "…" }</span></code></pre></div>
+        <div class="adm"><div class="t">Notas de campos</div><div class="c"><ul>
+          <li><b>country</b>: informativo — el país real se infiere del prefijo del teléfono (507→Panama, 57→Colombia).</li>
+          <li><b>plan</b>: no es una columna; se materializa como un pago confirmado. <code>premium_*</code> registra el pago; <code>free</code> anula los pagos confirmados previos.</li>
+          <li><b>insuranceId · policyNumber</b>: el seguro vive en los pacientes; se propaga a todos los pacientes del acudiente. Un acudiente recién creado <b>sin pacientes</b> aún no lo almacena (aparecerá al agregar pacientes, o edítalo con <code>POST/PATCH /api/patients</code>).</li>
+        </ul></div></div>
       </section>
 
       <section id="patients">
@@ -299,7 +309,7 @@ guardians = requests.get(f<span class="ts">"{base}/api/guardians"</span>, header
         <div class="single"><span class="cp" data-copy>Copiar</span><pre><code><span class="tc">// items[] →</span>
 { <span class="tk">"id"</span>:<span class="ts">"…"</span>, <span class="tk">"name"</span>:<span class="ts">"Lucas Muschett"</span>, <span class="tk">"nationalId"</span>:<span class="ts">""</span>, <span class="tk">"age"</span>:<span class="tn">4</span>,
   <span class="tk">"birthDate"</span>:<span class="ts">"2022-04-05"</span>, <span class="tk">"bloodType"</span>:<span class="ts">"O+"</span>, <span class="tk">"weightKg"</span>:<span class="tn">16.5</span>,
-  <span class="tk">"conditions"</span>:[<span class="ts">"asma"</span>], <span class="tk">"allergies"</span>:[<span class="ts">"Maní"</span>], <span class="tk">"insurance"</span>:{ <span class="tk">"id"</span>:<span class="tn">10</span>, <span class="tk">"name"</span>:<span class="ts">"Acerta"</span> },
+  <span class="tk">"conditions"</span>:[<span class="ts">"asma"</span>], <span class="tk">"allergies"</span>:[<span class="ts">"Maní"</span>], <span class="tk">"insurance"</span>:{ <span class="tk">"id"</span>:<span class="tn">10</span>, <span class="tk">"name"</span>:<span class="ts">"Acerta"</span>, <span class="tk">"policyNumber"</span>:<span class="ts">"POL-123"</span> },
   <span class="tk">"guardianId"</span>:<span class="ts">"3015d1d6-…"</span>, <span class="tk">"guardian"</span>:<span class="ts">"Ana Muschett"</span>, <span class="tk">"phone"</span>:<span class="ts">"50762342370"</span>,
   <span class="tk">"status"</span>:<span class="ts">"active"</span>, <span class="tk">"lastConsultation"</span>:<span class="ts">"2026-07-10 15:47"</span> }</code></pre></div>
         <h3>Crear / modificar / eliminar</h3>
@@ -310,10 +320,10 @@ guardians = requests.get(f<span class="ts">"{base}/api/guardians"</span>, header
         <div class="single"><span class="cp" data-copy>Copiar</span><pre><code><span class="tc">// POST — crea un hijo bajo un guardián. guardianId, name y birthDate son obligatorios</span>
 { <span class="tk">"guardianId"</span>:<span class="ts">"3015d1d6-…"</span>, <span class="tk">"name"</span>:<span class="ts">"Mateo Muschett"</span>, <span class="tk">"birthDate"</span>:<span class="ts">"2020-03-15"</span>,
   <span class="tk">"weightKg"</span>:<span class="tn">18.5</span>, <span class="tk">"bloodType"</span>:<span class="ts">"O+"</span>,       <span class="tc">// A+|A-|B+|B-|AB+|AB-|O+|O-</span>
-  <span class="tk">"conditions"</span>:[], <span class="tk">"allergies"</span>:[<span class="ts">"penicilina"</span>], <span class="tk">"insuranceId"</span>:<span class="tn">10</span> }
+  <span class="tk">"conditions"</span>:[], <span class="tk">"allergies"</span>:[<span class="ts">"penicilina"</span>], <span class="tk">"insuranceId"</span>:<span class="tn">10</span>, <span class="tk">"policyNumber"</span>:<span class="ts">"POL-123"</span> }
 
 <span class="tc">// PATCH — todos opcionales; DELETE borra el paciente (y limpia sus FKs).</span>
-{ <span class="tk">"weightKg"</span>:<span class="tn">20.0</span>, <span class="tk">"conditions"</span>:[<span class="ts">"asma"</span>], <span class="tk">"bloodType"</span>:<span class="ts">"A-"</span> }</code></pre></div>
+{ <span class="tk">"weightKg"</span>:<span class="tn">20.0</span>, <span class="tk">"conditions"</span>:[<span class="ts">"asma"</span>], <span class="tk">"bloodType"</span>:<span class="ts">"A-"</span>, <span class="tk">"insuranceId"</span>:<span class="tn">12</span>, <span class="tk">"policyNumber"</span>:<span class="ts">"POL-999"</span> }</code></pre></div>
       </section>
 
       <section id="chats">

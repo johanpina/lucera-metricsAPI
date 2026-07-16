@@ -39,7 +39,7 @@ Todas las listas devuelven un **envelope** y aceptan `?page` (def. 1) y `?page_l
 |---|---|---|
 | `GET /health` | `{ok:true}` | — (público) |
 | `POST /auth/login` · `POST /auth/refresh` | tokens | usuarios (env/demo) — público |
-| `GET/POST /api/guardians` | envelope `Guardian` (con `insurance` + `children[]`) / crea acudiente + user | guardians+users+dependents+insurance |
+| `GET/POST /api/guardians` | envelope `Guardian` (con `insurance{id,name,policyNumber}` + `children[]`) / crea acudiente + user | guardians+users+dependents+insurance |
 | `GET/PATCH/DELETE /api/guardians/{id}` | un `Guardian` / actualizado / `{deleted,id}` | — (DELETE = borrado suave) |
 | `GET/POST/PATCH/DELETE /api/patients[/{id}]` | CRUD de pacientes (con `insurance`) | dependents+guardian_dependent |
 | `GET /api/chats` | envelope `Chat` (con `messages[]`) | chat_sessions+messages+flags |
@@ -50,6 +50,12 @@ Todas las listas devuelven un **envelope** y aceptan `?page` (def. 1) y `?page_l
 | `GET /api/specialties` · `GET /api/specialties/all` · `POST/PATCH/DELETE` | `string[]` / con ids / CRUD | specialties |
 | `GET /api/usage/summary` · `/by-day` · `/by-user` | consumo de tokens/costo LLM | ai_model_runs |
 | `GET /api/stats/*` | KPIs y series (cacheados ~60 s) | agregados |
+
+**Campos del acudiente (POST/PATCH):** `name, phone, email, relationship, country, city,
+province, status, plan, insuranceId, policyNumber`. Notas: `country` es informativo (el país
+se infiere del prefijo del teléfono); `plan` (`free|premium_monthly|premium_annual`) se
+materializa como un pago confirmado en `payments`; el seguro (`insuranceId`+`policyNumber`)
+se propaga a los pacientes del acudiente (un acudiente sin pacientes aún no lo almacena).
 
 **Cache:** las estadísticas y los consumos se cachean en memoria ~60 s por instancia.
 
