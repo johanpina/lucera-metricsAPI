@@ -123,7 +123,7 @@
     <aside class="left" id="leftnav">
       <div class="grp">Empezar</div>
       <a href="#intro">Introducción</a><a href="#quickstart">Quickstart</a>
-      <a href="#auth">Autenticación · Refresh</a><a href="#mapping">Mapeo ES → EN</a><a href="#convenciones">Convenciones · Paginación</a>
+      <a href="#auth">Autenticación · Refresh</a><a href="#portal">Portal del acudiente</a><a href="#mapping">Mapeo ES → EN</a><a href="#convenciones">Convenciones · Paginación</a>
       <div class="grp">Endpoints</div>
       <a href="#guardians">Guardians · CRUD</a><a href="#patients">Patients · CRUD</a><a href="#chats">Chats</a>
       <a href="#payments">Payments · create</a><a href="#centers">Centers · CRUD</a>
@@ -192,14 +192,51 @@ guardians = requests.get(f<span class="ts">"{base}/api/guardians"</span>, header
         <div class="single"><span class="cp" data-copy>Copiar</span><pre><code><span class="tc">// request</span>  { <span class="tk">"refresh_token"</span>:<span class="ts">"eyJhbGci…"</span> }
 <span class="tc">// response</span> { <span class="tk">"access_token"</span>:<span class="ts">"eyJhbGci…"</span>, <span class="tk">"token_type"</span>:<span class="ts">"Bearer"</span>, <span class="tk">"expires_in"</span>:<span class="tn">7200</span> }
 <span class="tc">// si el refresh caducó (30 días) → 401 → vuelve a hacer login</span></code></pre></div>
-        <h3>Cuentas demo</h3>
-        <p>Contraseña <code>Lucera2026!</code>:</p>
+        <h3>Cuentas demo (operadores del tablero)</h3>
+        <p>Los operadores del tablero <b>no están en la base de datos</b>: viven en la
+          configuración del servicio (variable de entorno <code>METRICS_USERS</code> en JSON, o
+          las cuentas demo por defecto). Contraseña demo <code>Lucera2026!</code>:</p>
         <div class="tw"><table>
           <tr><th>Email</th><th>role</th></tr>
           <tr><td><code>admin@lucera.pa</code></td><td>Admin</td></tr>
           <tr><td><code>ventas@lucera.pa</code></td><td>Sales</td></tr>
           <tr><td><code>esanchez@lucera.pa</code></td><td>Doctor</td></tr>
         </table></div>
+        <p>Para cuentas reales: setea <code>METRICS_USERS</code> = <code>[{"email","name","role","pass_sha256"}]</code>
+          (o <code>password</code> en texto plano). Cuando está definida, reemplaza a las demo.</p>
+      </section>
+
+      <section id="portal">
+        <h2>Portal del acudiente</h2>
+        <p>Login <b>separado</b> para que un acudiente entre a ver <b>solo sus propios datos</b>.
+          Se autentica con <b>teléfono + contraseña</b> (no email) y recibe un token con
+          <code>scope=portal</code> que <b>no puede</b> tocar los endpoints de admin
+          (<span class="badge b-warn">403</span>) — y viceversa.</p>
+        <div class="ep-h"><span class="m post">post</span><span class="path">/auth/guardian/login</span>
+          <span class="ret">→ <code>{ access_token, refresh_token, guardian }</code> · público</span></div>
+        <div class="single"><span class="cp" data-copy>Copiar</span><pre><code><span class="tc">// request</span>  { <span class="tk">"phone"</span>:<span class="ts">"+57 301 5384517"</span>, <span class="tk">"password"</span>:<span class="ts">"MiPortal2026!"</span> }
+<span class="tc">// response</span> { <span class="tk">"access_token"</span>:<span class="ts">"eyJ…"</span>, <span class="tk">"refresh_token"</span>:<span class="ts">"eyJ…"</span>,
+             <span class="tk">"guardian"</span>:{ <span class="tk">"id"</span>:<span class="ts">"…"</span>, <span class="tk">"name"</span>:<span class="ts">"Johan Piña"</span> } }
+<span class="tc">// El teléfono admite espacios/+, se normaliza a dígitos. Refresh: mismo /auth/refresh.</span></code></pre></div>
+        <h3>Habilitar el login (admin)</h3>
+        <p>Un acudiente <b>no tiene contraseña</b> hasta que un admin se la fija. Los usuarios del
+          bot de WhatsApp <b>no</b> pueden entrar hasta entonces (su <code>password_hash</code> queda vacío).</p>
+        <div class="ep-h"><span class="m post">post</span><span class="path">/api/guardians/{id}/portal-password</span>
+          <span class="ret">→ <code>{ ok, id }</code> · requiere token admin</span></div>
+        <div class="single"><span class="cp" data-copy>Copiar</span><pre><code>{ <span class="tk">"password"</span>:<span class="ts">"MiPortal2026!"</span> }   <span class="tc">// mín. 6 caracteres; se guarda con PBKDF2</span></code></pre></div>
+        <h3>Endpoints del portal (token de acudiente)</h3>
+        <div class="tw"><table>
+          <tr><th>Ruta</th><th>Devuelve (solo lo del acudiente)</th></tr>
+          <tr><td><code>GET /portal/me</code></td><td>su perfil + <code>children</code> (con seguro/plan)</td></tr>
+          <tr><td><code>GET /portal/children</code></td><td>sus hijos</td></tr>
+          <tr><td><code>GET /portal/patients</code></td><td>sus hijos (detalle de paciente)</td></tr>
+          <tr><td><code>GET /portal/chats</code></td><td>sus sesiones (resumen, sin mensajes)</td></tr>
+          <tr><td><code>GET /portal/payments</code></td><td>sus pagos</td></tr>
+        </table></div>
+        <div class="adm"><div class="t">Seguridad</div><div class="c"><p>El token del portal lleva
+          <code>gid</code> (id del acudiente) y <code>scope=portal</code>. Cada endpoint filtra por ese
+          <code>gid</code>: un acudiente <b>nunca</b> ve datos de otro. Los tokens de admin y de portal
+          <b>no son intercambiables</b> (403 cruzado).</p></div></div>
       </section>
 
       <section id="mapping">

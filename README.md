@@ -20,8 +20,23 @@ GET  /api/*         Authorization: Bearer <access_token>
 Al caducar el access → `401 Token expired` → llamar `/auth/refresh`. Si el refresh también caducó → re-login.
 `/health`, `/auth/login` y `/auth/refresh` son públicos. Alternativa server-to-server: header `X-API-Key`.
 
-**Usuarios:** cuentas demo (`admin@lucera.pa`, `ventas@lucera.pa`, `esanchez@lucera.pa`) con la
-contraseña de `METRICS_DEMO_PASSWORD`. Para cuentas reales: `METRICS_USERS` (JSON `[{email,name,role,password}]`).
+**Usuarios (operadores del tablero):** NO están en la BD; viven en la config del servicio.
+Cuentas demo (`admin@lucera.pa`, `ventas@lucera.pa`, `esanchez@lucera.pa`) con `METRICS_DEMO_PASSWORD`.
+Para cuentas reales: `METRICS_USERS` (JSON `[{email,name,role,pass_sha256|password}]`).
+
+## Portal del acudiente
+
+Login aparte para que un acudiente vea **solo sus propios datos** (teléfono + contraseña):
+
+```
+POST /api/guardians/{id}/portal-password  { password }     # admin fija/actualiza la clave (PBKDF2)
+POST /auth/guardian/login   { phone, password }            → { access_token, refresh_token, guardian }
+GET  /portal/me · /portal/children · /portal/patients · /portal/chats · /portal/payments
+```
+
+El token del portal lleva `scope=portal` + `gid`; **no puede** tocar `/api/*` (403 cruzado) y cada
+endpoint filtra por el `gid`. Un acudiente del bot no puede entrar hasta que un admin le fija la clave
+(su `password_hash` queda vacío). Los guardians y los operadores del tablero son mundos separados.
 
 ## Paginación
 

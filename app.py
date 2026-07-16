@@ -11,6 +11,7 @@ import hashlib
 import hmac
 import json
 import os
+import re
 import time
 import uuid
 from datetime import date, datetime
@@ -148,18 +149,43 @@ def _check_password(user: dict, password: str) -> bool:
     return hmac.compare_digest(str(user.get("password", "")), password)
 
 
-def _make_token(sub: str, name: str, role: str, typ: str, ttl: int) -> str:
+def _make_token(sub: str, name: str, role: str, typ: str, ttl: int, **extra) -> str:
     now = int(time.time())
-    return jwt.encode(
-        {"sub": sub, "name": name, "role": role, "typ": typ, "iat": now, "exp": now + ttl},
-        JWT_SECRET, algorithm="HS256",
-    )
+    claims = {"sub": sub, "name": name, "role": role, "typ": typ, "iat": now, "exp": now + ttl}
+    claims.update({k: v for k, v in extra.items() if v is not None})
+    return jwt.encode(claims, JWT_SECRET, algorithm="HS256")
+
+
+# ── Password hashing (PBKDF2-HMAC-SHA256, sin dependencias externas) ──────────
+_PBKDF2_ITER = 200_000
+
+
+def _hash_password(password: str) -> str:
+    salt = os.urandom(16)
+    dk = hashlib.pbkdf2_hmac("sha256", password.encode(), salt, _PBKDF2_ITER)
+    return f"pbkdf2_sha256${_PBKDF2_ITER}${salt.hex()}${dk.hex()}"
+
+
+def _verify_password(password: str, stored: str) -> bool:
+    try:
+        algo, iters, salt_hex, hash_hex = (stored or "").split("$")
+        if algo != "pbkdf2_sha256":
+            return False
+        dk = hashlib.pbkdf2_hmac("sha256", password.encode(), bytes.fromhex(salt_hex), int(iters))
+        return hmac.compare_digest(dk.hex(), hash_hex)
+    except (ValueError, AttributeError):
+        return False
+
+
+def _digits(s: str | None) -> str:
+    return re.sub(r"\D", "", s or "")
 
 
 def require_auth(
     authorization: str | None = Header(default=None),
     x_api_key: str | None = Header(default=None),
 ) -> dict:
+    """Auth de OPERADORES del tablero. Rechaza tokens del portal del acudiente."""
     if API_KEY and x_api_key and hmac.compare_digest(x_api_key, API_KEY):
         return {"sub": "apikey", "role": "Admin"}
     if authorization and authorization.lower().startswith("bearer "):
@@ -172,12 +198,35 @@ def require_auth(
             raise HTTPException(status_code=401, detail="Invalid token.")
         if claims.get("typ") == "refresh":
             raise HTTPException(status_code=401, detail="Refresh token cannot be used for API calls.")
+        if claims.get("scope") == "portal":
+            raise HTTPException(status_code=403, detail="Guardian portal token cannot access admin endpoints.")
         return claims
     raise HTTPException(status_code=401, detail="Not authenticated (send Bearer <access_token> or X-API-Key).")
 
 
+def require_guardian(authorization: str | None = Header(default=None)) -> str:
+    """Auth del PORTAL DEL ACUDIENTE. Devuelve el id del acudiente (gid) del token."""
+    if not (authorization and authorization.lower().startswith("bearer ")):
+        raise HTTPException(status_code=401, detail="Not authenticated (guardian Bearer token required).")
+    token = authorization.split(" ", 1)[1].strip()
+    try:
+        claims = jwt.decode(token, JWT_SECRET, algorithms=["HS256"])
+    except jwt.ExpiredSignatureError:
+        raise HTTPException(status_code=401, detail="Token expired. Use /auth/refresh.")
+    except Exception:  # noqa: BLE001
+        raise HTTPException(status_code=401, detail="Invalid token.")
+    if claims.get("typ") == "refresh" or claims.get("scope") != "portal" or not claims.get("gid"):
+        raise HTTPException(status_code=403, detail="Not a guardian portal token.")
+    return claims["gid"]
+
+
 class LoginIn(BaseModel):
     email: str
+    password: str
+
+
+class GuardianLoginIn(BaseModel):
+    phone: str
     password: str
 
 
@@ -204,6 +253,31 @@ def login(body: LoginIn) -> dict:
     }
 
 
+@app.post("/auth/guardian/login")
+def guardian_login(body: GuardianLoginIn) -> dict:
+    """Portal del acudiente: login con TELÉFONO + contraseña. Devuelve un token con
+    scope='portal' que SOLO puede leer los datos del propio acudiente (no PII de otros)."""
+    phone = _digits(body.phone)
+    rows = _q(
+        """SELECT g.id AS gid, g.full_name AS name, u.password_hash AS ph, u.status AS ustatus
+           FROM guardians g JOIN users u ON u.id=g.user_id
+           WHERE u.phone_number=%s AND u.deleted_at IS NULL""",
+        (phone,),
+    )
+    if not rows or not _verify_password(body.password or "", rows[0]["ph"]):
+        raise HTTPException(status_code=401, detail="Wrong phone or password.")
+    if rows[0]["ustatus"] != "active":
+        raise HTTPException(status_code=403, detail="Account is not active.")
+    g = rows[0]
+    return {
+        "access_token": _make_token(g["gid"], g["name"], "Guardian", "access", ACCESS_TTL, scope="portal", gid=g["gid"]),
+        "refresh_token": _make_token(g["gid"], g["name"], "Guardian", "refresh", REFRESH_TTL, scope="portal", gid=g["gid"]),
+        "token_type": "Bearer",
+        "expires_in": ACCESS_TTL,
+        "guardian": {"id": g["gid"], "name": g["name"]},
+    }
+
+
 @app.post("/auth/refresh")
 def refresh(body: RefreshIn) -> dict:
     try:
@@ -215,7 +289,10 @@ def refresh(body: RefreshIn) -> dict:
     if c.get("typ") != "refresh":
         raise HTTPException(status_code=401, detail="Not a refresh token.")
     return {
-        "access_token": _make_token(c["sub"], c.get("name", ""), c.get("role", ""), "access", ACCESS_TTL),
+        "access_token": _make_token(
+            c["sub"], c.get("name", ""), c.get("role", ""), "access", ACCESS_TTL,
+            scope=c.get("scope"), gid=c.get("gid"),   # preserva el scope del portal si aplica
+        ),
         "token_type": "Bearer",
         "expires_in": ACCESS_TTL,
     }
@@ -511,6 +588,23 @@ def guardian_delete(gid: str):
     _exec("UPDATE users SET status='inactive', is_active=0, deleted_at=NOW(), updated_at=NOW() WHERE id=%s",
           (g[0]["user_id"],))
     return {"deleted": True, "id": gid}
+
+
+class PortalPassword(BaseModel):
+    password: str
+
+
+@app.post("/api/guardians/{gid}/portal-password", dependencies=[Depends(require_auth)])
+def guardian_set_portal_password(gid: str, body: PortalPassword):
+    """Admin: fija/actualiza la contraseña del portal del acudiente (habilita su login)."""
+    g = _q("SELECT user_id FROM guardians WHERE id=%s", (gid,))
+    if not g:
+        raise HTTPException(status_code=404, detail="Guardian not found.")
+    if len(body.password or "") < 6:
+        raise HTTPException(status_code=422, detail="Password must be at least 6 characters.")
+    _exec("UPDATE users SET password_hash=%s, updated_at=NOW() WHERE id=%s",
+          (_hash_password(body.password), g[0]["user_id"]))
+    return {"ok": True, "id": gid}
 
 
 # ── Patients (CRUD) ──────────────────────────────────────────────────────────
@@ -1075,6 +1169,59 @@ def stats_csat():
                   "WHERE feedback_score IS NOT NULL AND closed_at IS NOT NULL GROUP BY YEARWEEK(closed_at) ORDER BY yw")
         return [{"week": f"W{i + 1}", "csat": int(r["csat"])} for i, r in enumerate(rows)]
     return _cached("stats:csat", 60, _f)
+
+
+# ── Portal del acudiente (scoped: SOLO los datos del propio acudiente) ────────
+@app.get("/portal/me")
+def portal_me(gid: str = Depends(require_guardian)):
+    """Perfil del acudiente autenticado + sus hijos (incluye seguro/plan)."""
+    return _one_guardian(gid)
+
+
+@app.get("/portal/children")
+def portal_children(gid: str = Depends(require_guardian)):
+    """Hijos del acudiente autenticado."""
+    return _children_for([gid]).get(gid, [])
+
+
+@app.get("/portal/patients")
+def portal_patients(gid: str = Depends(require_guardian)):
+    """Hijos (detalle de paciente) del acudiente autenticado."""
+    rows = _q(f"{_P_SELECT} WHERE gd.guardian_id=%s ORDER BY d.full_name", (gid,))
+    return [_patient_row(r) for r in rows]
+
+
+@app.get("/portal/chats")
+def portal_chats(gid: str = Depends(require_guardian)):
+    """Historial de sesiones del acudiente autenticado (resumen, sin mensajes)."""
+    rows = _q(
+        """SELECT cs.id, d.full_name AS patient, cl.name AS triage, cs.appointment_type,
+               cs.summary AS ai_summary, cs.feedback_score AS rating, cs.status, cs.fsm_state,
+               cs.opened_at AS started_at, cs.closed_at AS closed_at
+           FROM chat_sessions cs LEFT JOIN dependents d ON d.id=cs.dependent_id
+           LEFT JOIN classification cl ON cl.id=cs.classification_id
+           WHERE cs.guardian_id=%s ORDER BY cs.opened_at DESC""",
+        (gid,),
+    )
+
+    def _st(s):
+        return "closed" if s["status"] == "closed" else ("waiting" if s["fsm_state"] == "awaiting_user" else "active")
+
+    return [{
+        "id": s["id"], "patient": s["patient"] or "", "triage": TRIAGE.get(s["triage"], "general"),
+        "attentionType": "in_person" if (s["appointment_type"] or "").lower().startswith("pres") else "virtual",
+        "aiSummary": s["ai_summary"] or None, "rating": int(s["rating"]) if s["rating"] is not None else None,
+        "startedAt": _clean(s["started_at"]) if s["started_at"] else "",
+        "closedAt": _clean(s["closed_at"]) if s["closed_at"] else None, "status": _st(s),
+    } for s in rows]
+
+
+@app.get("/portal/payments")
+def portal_payments(gid: str = Depends(require_guardian)):
+    """Pagos del acudiente autenticado."""
+    rows = _q(f"{_PAY_SELECT} WHERE u.id=(SELECT user_id FROM guardians WHERE id=%s) "
+              "ORDER BY p.created_at DESC", (gid,))
+    return [_payment_row(r) for r in rows]
 
 
 # ── Future sections (paginated empty) ────────────────────────────────────────
