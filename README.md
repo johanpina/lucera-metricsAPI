@@ -44,6 +44,16 @@ El link de registro es un JWT HS256 (claims `sub=guardianId`, `typ=register`, ex
 `PORTAL_TOKEN_SECRET` — **secreto compartido con el bot**, que lo emite en su flujo de WhatsApp y manda
 el link embebido a `PORTAL_REGISTER_URL` (el form de Mauro).
 
+> **Pendiente (lado bot):** falta el **disparador en WhatsApp** que genera ese token y envía el link.
+> El metrics API ya está completo; solo falta decidir *cuándo* el bot lo manda (tras registro, comando
+> "portal", o bajo demanda) e implementarlo. Anotado en `LuceraBot-agent/docs/ESTADO.md`.
+
+## Variables de entorno del portal
+
+`PORTAL_TOKEN_SECRET` (secreto compartido con el bot; def. = `JWT_SECRET`), `PORTAL_REGISTER_URL`
+(URL del form de registro de Mauro; si vacía, `portal-link` devuelve `url: null` pero sí el `token`),
+`REGISTER_TTL_HOURS` (validez del link, def. 72).
+
 El token del portal lleva `scope=portal` + `gid`; **no puede** tocar `/api/*` (403 cruzado) y cada
 endpoint filtra por el `gid`. Un acudiente del bot no puede entrar hasta que un admin le fija la clave
 (su `password_hash` queda vacío). Los guardians y los operadores del tablero son mundos separados.
