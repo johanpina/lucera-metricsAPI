@@ -127,7 +127,7 @@
       <div class="grp">Endpoints</div>
       <a href="#guardians">Guardians · CRUD</a><a href="#patients">Patients · CRUD</a><a href="#chats">Chats</a>
       <a href="#payments">Payments · create</a><a href="#centers">Centers · CRUD</a>
-      <a href="#catalogs">Insurances · Specialties · CRUD</a><a href="#usage">Usage / Consumos</a><a href="#stats">Statistics / KPIs</a>
+      <a href="#catalogs">Insurances · Specialties · CRUD</a><a href="#usage">Usage / Consumos</a><a href="#stats">Statistics / KPIs</a><a href="#botstatus">Estado del bot</a>
       <div class="grp">Integración</div>
       <a href="#react">Conectar el dashboard</a><a href="#future">Endpoints futuros</a>
       <a href="#errores">Errores</a><a href="#interactivo">Docs interactivas</a>
@@ -507,6 +507,49 @@ GET /api/portal-links?only_missing=true
           <tr><td><code>/api/stats/attention-type</code></td><td><code>{ type, value }[]</code></td></tr>
           <tr><td><code>/api/stats/csat</code></td><td><code>{ week, csat }[]</code></td></tr>
         </table></div>
+      </section>
+
+      <section id="botstatus">
+        <h2>Sistema · Estado del bot</h2>
+        <p>Endpoint para el <b>indicador de estado</b> del tablero: dice si el bot de WhatsApp está
+          <b>arriba</b> y además <b>funcional</b>. Internamente hace un ping al <code>/ready</code> del
+          servicio del bot y normaliza la respuesta. Requiere <code>Authorization: Bearer</code> como
+          cualquier <code>/api/*</code>.</p>
+        <div class="ep-h"><span class="m get">get</span><span class="path">/api/bot-status</span>
+          <span class="ret">→ <code>{ bot, ready, checks, latency_ms, checked_at, url }</code></span></div>
+        <div class="single"><span class="cp" data-copy>Copiar</span><pre><code><span class="tc">// 200 — bot arriba y funcional (caso normal)</span>
+{
+  <span class="tk">"bot"</span>:<span class="ts">"up"</span>,            <span class="tc">// "up" = el proceso respondió · "down" = no respondió</span>
+  <span class="tk">"ready"</span>:true,           <span class="tc">// true SOLO si todas sus dependencias están OK</span>
+  <span class="tk">"checks"</span>:{ <span class="tk">"mysql"</span>:true, <span class="tk">"redis"</span>:true, <span class="tk">"rag"</span>:true },
+  <span class="tk">"latency_ms"</span>:<span class="tn">484</span>,       <span class="tc">// cuánto tardó el ping al bot</span>
+  <span class="tk">"checked_at"</span>:<span class="ts">"2026-07-18T17:30:05Z"</span>,
+  <span class="tk">"url"</span>:<span class="ts">"https://…lucera-botdev…/ready"</span>
+}
+
+<span class="tc">// 200 — bot ARRIBA pero una dependencia caída → ready:false (revisa checks)</span>
+{ <span class="tk">"bot"</span>:<span class="ts">"up"</span>, <span class="tk">"ready"</span>:false, <span class="tk">"checks"</span>:{ <span class="tk">"mysql"</span>:true, <span class="tk">"redis"</span>:true, <span class="tk">"rag"</span>:false }, <span class="tk">"latency_ms"</span>:<span class="tn">512</span>, … }
+
+<span class="tc">// 200 — bot CAÍDO (o cold-start &gt; timeout / red). SIEMPRE responde 200: mira el campo "bot".</span>
+{ <span class="tk">"bot"</span>:<span class="ts">"down"</span>, <span class="tk">"ready"</span>:false, <span class="tk">"checks"</span>:{}, <span class="tk">"latency_ms"</span>:<span class="tn">8003</span>,
+  <span class="tk">"checked_at"</span>:<span class="ts">"…"</span>, <span class="tk">"url"</span>:<span class="ts">"…"</span>, <span class="tk">"error"</span>:<span class="ts">"timeout"</span> }</code></pre></div>
+        <table>
+          <tr><th>Campo</th><th>Significado</th></tr>
+          <tr><td><code>bot</code></td><td><code>"up"</code> = el bot respondió · <code>"down"</code> = no respondió (caído, cold-start &gt; timeout, o red). <b>Decide el semáforo con este campo, no con el status HTTP.</b></td></tr>
+          <tr><td><code>ready</code></td><td><code>true</code> solo si TODAS las dependencias del bot están OK. <code>false</code> con <code>bot:"up"</code> = arriba pero degradado.</td></tr>
+          <tr><td><code>checks</code></td><td>Estado individual: <code>mysql</code>, <code>redis</code>, <code>rag</code> (el cerebro de IA). Vacío <code>{}</code> si el bot no respondió.</td></tr>
+          <tr><td><code>latency_ms</code></td><td>Milisegundos que tardó el chequeo.</td></tr>
+          <tr><td><code>checked_at</code></td><td>Timestamp UTC (ISO-8601) del chequeo.</td></tr>
+          <tr><td><code>error</code></td><td>Solo cuando <code>bot:"down"</code>: detalle del fallo (p.ej. <code>timeout</code>).</td></tr>
+        </table>
+        <div class="adm"><div class="t">Notas para el front (semáforo)</div><div class="c"><ul>
+          <li>🟢 <b>Verde</b> "Activo": <code>bot==="up" &amp;&amp; ready===true</code>.</li>
+          <li>🟡 <b>Amarillo</b> "Degradado": <code>bot==="up" &amp;&amp; ready===false</code> → muestra qué <code>checks</code> está en <code>false</code>.</li>
+          <li>🔴 <b>Rojo</b> "Caído": <code>bot==="down"</code>.</li>
+          <li>El endpoint <b>siempre devuelve 200</b> (salvo <span class="badge b-warn">401</span> si falta el token) para que el fetch nunca “explote”; el estado real va en el JSON.</li>
+          <li>Polling sugerido: <b>cada 30–60 s</b> (no menos: el bot puede tener cold-start y no conviene spamear).</li>
+          <li>Ajustable en el servidor por env: <code>BOT_HEALTH_URL</code> (a qué bot apunta) y <code>BOT_HEALTH_TIMEOUT</code> (segundos, def. 8).</li>
+        </ul></div></div>
       </section>
 
       <section id="react">

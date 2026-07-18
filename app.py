@@ -49,6 +49,13 @@ if os.environ.get("MYSQL_SSL", "").lower() in ("1", "true", "yes"):
     DB["ssl"] = _ctx
 
 
+# ── Health del bot de WhatsApp (proxy al /ready del servicio del bot) ─────────
+BOT_HEALTH_URL = os.environ.get(
+    "BOT_HEALTH_URL", "https://lucera-botdev-nz76w2xbra-uc.a.run.app/ready"
+)
+BOT_HEALTH_TIMEOUT = float(os.environ.get("BOT_HEALTH_TIMEOUT", "8"))
+
+
 def _q(sql: str, args: tuple = ()) -> list[dict]:
     conn = pymysql.connect(**DB)
     try:
@@ -333,6 +340,46 @@ def health():
         return {"ok": True}
     except Exception as e:  # noqa: BLE001
         raise HTTPException(status_code=503, detail=f"db: {e}")
+
+
+@app.get("/api/bot-status", dependencies=[Depends(require_auth)])
+def bot_status():
+    """Estado del bot de WhatsApp para el tablero: hace ping al /ready del bot.
+
+    Devuelve SIEMPRE 200 (para que el front lo parsee sin ambigüedad):
+      bot='up'   → el proceso del bot respondió; `ready` y `checks` reflejan sus dependencias
+                   (mysql/redis/rag). `ready=false` = el bot está arriba pero algo falla.
+      bot='down' → el bot no respondió (caído, cold start > timeout, o red).
+    """
+    import urllib.request
+
+    t0 = time.time()
+    checked_at = datetime.utcnow().isoformat() + "Z"
+    try:
+        req = urllib.request.Request(BOT_HEALTH_URL, headers={"User-Agent": "lucera-metrics/bot-status"})
+        with urllib.request.urlopen(req, timeout=BOT_HEALTH_TIMEOUT) as resp:
+            raw = resp.read().decode("utf-8", "replace")
+        data = json.loads(raw) if raw else {}
+        if not isinstance(data, dict):
+            data = {}
+        return {
+            "bot": "up",
+            "ready": bool(data.get("ready", False)),
+            "checks": data.get("checks", {}),
+            "latency_ms": int((time.time() - t0) * 1000),
+            "checked_at": checked_at,
+            "url": BOT_HEALTH_URL,
+        }
+    except Exception as e:  # noqa: BLE001
+        return {
+            "bot": "down",
+            "ready": False,
+            "checks": {},
+            "latency_ms": int((time.time() - t0) * 1000),
+            "checked_at": checked_at,
+            "url": BOT_HEALTH_URL,
+            "error": str(e)[:200],
+        }
 
 
 # ── Docs at root ─────────────────────────────────────────────────────────────
