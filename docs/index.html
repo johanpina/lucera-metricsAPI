@@ -330,8 +330,12 @@ GET /api/portal-links?only_missing=true
         <div class="single"><span class="cp" data-copy>Copiar</span><pre><code><span class="tc">// items[] →</span>
 {
   <span class="tk">"id"</span>:<span class="ts">"3015d1d6-…"</span>, <span class="tk">"phone"</span>:<span class="ts">"50762342370"</span>, <span class="tk">"email"</span>:<span class="ts">"ana.muschett@…"</span>,
+  <span class="tk">"accountCode"</span>:<span class="ts">"LUC-000002"</span>,  <span class="tc">// ★ ID legible de la CUENTA (familia)</span>
   <span class="tk">"name"</span>:<span class="ts">"Ana Muschett"</span>, <span class="tk">"relationship"</span>:<span class="ts">"mother"</span>,   <span class="tc">// mother|father|guardian|grandparent</span>
-  <span class="tk">"country"</span>:<span class="ts">"Panama"</span>, <span class="tk">"city"</span>:<span class="ts">"Ciudad de Panamá"</span>,
+  <span class="tk">"gender"</span>:<span class="ts">"femenino"</span>,      <span class="tc">// ★ femenino|masculino|otro|prefiere_no_decir · null si no lo dijo</span>
+  <span class="tk">"country"</span>:<span class="ts">"Panamá"</span>, <span class="tk">"province"</span>:<span class="ts">"Panamá Oeste"</span>, <span class="tk">"city"</span>:<span class="ts">"Arraiján"</span>,
+  <span class="tk">"address"</span>:<span class="ts">"Calle 5, casa 12"</span>,  <span class="tc">// ★ dirección del acudiente</span>
+  <span class="tk">"chats"</span>:<span class="tn">40</span>,             <span class="tc">// ★ nº de consultas de la cuenta</span>
   <span class="tk">"status"</span>:<span class="ts">"active"</span>,       <span class="tc">// active|suspended|inactive</span>
   <span class="tk">"plan"</span>:<span class="ts">"free"</span>,           <span class="tc">// free|premium_monthly|premium_annual</span>
   <span class="tk">"insurance"</span>:{ <span class="tk">"id"</span>:<span class="tn">10</span>, <span class="tk">"name"</span>:<span class="ts">"Acerta"</span>, <span class="tk">"policyNumber"</span>:<span class="ts">"POL-123"</span> },  <span class="tc">// o null si ningún hijo tiene seguro</span>
@@ -357,6 +361,8 @@ GET /api/portal-links?only_missing=true
 <span class="tc">// PATCH — todos los campos opcionales; solo manda lo que cambies</span>
 { <span class="tk">"name"</span>:<span class="ts">"Ana M. Muschett"</span>, <span class="tk">"email"</span>:<span class="ts">"nueva@…"</span>, <span class="tk">"city"</span>:<span class="ts">"Colón"</span>,
   <span class="tk">"relationship"</span>:<span class="ts">"mother"</span>, <span class="tk">"status"</span>:<span class="ts">"suspended"</span>,
+  <span class="tk">"address"</span>:<span class="ts">"Calle 5, casa 12"</span>,   <span class="tc">// ★ nuevo</span>
+  <span class="tk">"gender"</span>:<span class="ts">"femenino"</span>,             <span class="tc">// ★ nuevo · 422 si no es un valor válido</span>
   <span class="tk">"plan"</span>:<span class="ts">"free"</span>, <span class="tk">"insuranceId"</span>:<span class="tn">12</span>, <span class="tk">"policyNumber"</span>:<span class="ts">"POL-999"</span> }
 
 <span class="tc">// DELETE es un borrado suave: desactiva la cuenta (deja de aparecer en la lista,</span>
@@ -365,6 +371,9 @@ GET /api/portal-links?only_missing=true
           <li><b>country</b>: editable y persistente (columna del acudiente). En acudientes antiguos sin país se infiere del prefijo del teléfono (507→Panamá, 57→Colombia).</li>
           <li><b>plan</b>: no es una columna; se materializa como un pago confirmado. <code>premium_*</code> registra el pago; <code>free</code> anula los pagos confirmados previos.</li>
           <li><b>insuranceId · policyNumber</b>: el seguro es del <b>acudiente</b> (lo natural: la póliza suele ser del padre). Se guarda al crear, sin depender de pacientes. Envía <code>insuranceId:0</code> para quitarlo. Cada paciente conserva además su propio seguro opcional.</li>
+          <li><b>★ accountCode</b>: identifica la <b>cuenta/familia</b> (<code>LUC-000042</code>). Se asigna solo al registrarse y es de <b>solo lectura</b>. No lo confundas con <code>idNumber</code> de <code>/api/patients</code>, que es la <b>cédula del paciente</b>: son cosas distintas.</li>
+          <li><b>★ gender · address · province</b>: se capturan en el formulario de registro y son editables por <code>PATCH</code>. En cuentas creadas antes de julio 2026 vienen <code>null</code>.</li>
+          <li><b>★ chats</b>: número de consultas de la cuenta. Calculado, de solo lectura.</li>
         </ul></div></div>
       </section>
 
@@ -374,10 +383,18 @@ GET /api/portal-links?only_missing=true
           <span class="ret">→ envelope de <code>Patient</code> · <code>?page ?page_limit ?q</code></span></div>
         <div class="single"><span class="cp" data-copy>Copiar</span><pre><code><span class="tc">// items[] →</span>
 { <span class="tk">"id"</span>:<span class="ts">"…"</span>, <span class="tk">"name"</span>:<span class="ts">"Lucas Muschett"</span>, <span class="tk">"nationalId"</span>:<span class="ts">""</span>, <span class="tk">"age"</span>:<span class="tn">4</span>,
+  <span class="tk">"idNumber"</span>:<span class="ts">"8-1234-5678"</span>,   <span class="tc">// ★ CÉDULA del paciente (≠ nationalId, que es el nº de CSS)</span>
+  <span class="tk">"school"</span>:<span class="ts">"Colegio San José"</span>,  <span class="tc">// ★ centro educativo</span>
   <span class="tk">"birthDate"</span>:<span class="ts">"2022-04-05"</span>, <span class="tk">"bloodType"</span>:<span class="ts">"O+"</span>, <span class="tk">"weightKg"</span>:<span class="tn">16.5</span>,
   <span class="tk">"conditions"</span>:[<span class="ts">"asma"</span>], <span class="tk">"allergies"</span>:[<span class="ts">"Maní"</span>], <span class="tk">"insurance"</span>:{ <span class="tk">"id"</span>:<span class="tn">10</span>, <span class="tk">"name"</span>:<span class="ts">"Acerta"</span>, <span class="tk">"policyNumber"</span>:<span class="ts">"POL-123"</span> },
   <span class="tk">"guardianId"</span>:<span class="ts">"3015d1d6-…"</span>, <span class="tk">"guardian"</span>:<span class="ts">"Ana Muschett"</span>, <span class="tk">"phone"</span>:<span class="ts">"50762342370"</span>,
+  <span class="tk">"accountCode"</span>:<span class="ts">"LUC-000002"</span>, <span class="tk">"address"</span>:<span class="ts">"Calle 5, casa 12"</span>,  <span class="tc">// ★ heredados del acudiente</span>
+  <span class="tk">"chats"</span>:<span class="tn">6</span>,                <span class="tc">// ★ nº de consultas de ESTE paciente</span>
   <span class="tk">"status"</span>:<span class="ts">"active"</span>, <span class="tk">"lastConsultation"</span>:<span class="ts">"2026-07-10 15:47"</span> }</code></pre></div>
+        <div class="adm warn"><div class="t">⚠️ <code>nationalId</code> ≠ <code>idNumber</code></div><div class="c">
+          <p><code>nationalId</code> es el número de <b>CSS</b> (seguridad social) y ya existía.
+            <code>idNumber</code> es la <b>cédula/documento</b> del paciente, el campo nuevo que se pidió
+            para el envío de formularios. Son columnas distintas: no las mezcles.</p></div></div>
         <h3>Crear / modificar / eliminar</h3>
         <div class="ep-h"><span class="m get">get</span><span class="path">/api/patients/{id}</span><span class="ret">→ un <code>Patient</code></span></div>
         <div class="ep-h" style="margin-top:.7em"><span class="m post">post</span><span class="path">/api/patients</span><span class="ret">→ <span class="badge">201</span> el <code>Patient</code> creado</span></div>
@@ -389,25 +406,61 @@ GET /api/portal-links?only_missing=true
   <span class="tk">"conditions"</span>:[], <span class="tk">"allergies"</span>:[<span class="ts">"penicilina"</span>], <span class="tk">"insuranceId"</span>:<span class="tn">10</span>, <span class="tk">"policyNumber"</span>:<span class="ts">"POL-123"</span> }
 
 <span class="tc">// PATCH — todos opcionales; DELETE borra el paciente (y limpia sus FKs).</span>
-{ <span class="tk">"weightKg"</span>:<span class="tn">20.0</span>, <span class="tk">"conditions"</span>:[<span class="ts">"asma"</span>], <span class="tk">"bloodType"</span>:<span class="ts">"A-"</span>, <span class="tk">"insuranceId"</span>:<span class="tn">12</span>, <span class="tk">"policyNumber"</span>:<span class="ts">"POL-999"</span> }</code></pre></div>
+{ <span class="tk">"weightKg"</span>:<span class="tn">20.0</span>, <span class="tk">"conditions"</span>:[<span class="ts">"asma"</span>], <span class="tk">"bloodType"</span>:<span class="ts">"A-"</span>, <span class="tk">"insuranceId"</span>:<span class="tn">12</span>, <span class="tk">"policyNumber"</span>:<span class="ts">"POL-999"</span>,
+  <span class="tk">"idNumber"</span>:<span class="ts">"8-1234-5678"</span>, <span class="tk">"school"</span>:<span class="ts">"Colegio San José"</span> }   <span class="tc">// ★ nuevos</span></code></pre></div>
       </section>
 
       <section id="chats">
         <h2>Chats</h2>
         <div class="ep-h"><span class="m get">get</span><span class="path">/api/chats</span>
-          <span class="ret">→ <code>Chat[]</code> (con <code>messages[]</code>)</span></div>
+          <span class="ret">→ <code>Chat[]</code> (con <code>messages[]</code>) · <code>?derivation ?insurance_id ?date_from ?date_to ?guardian_id</code></span></div>
         <div class="single"><span class="cp" data-copy>Copiar</span><pre><code>[
   {
     <span class="tk">"id"</span>:<span class="ts">"1dbe81b0-…"</span>, <span class="tk">"guardian"</span>:<span class="ts">"Ana Muschett"</span>, <span class="tk">"patient"</span>:<span class="ts">"Julián Muschett"</span>,
     <span class="tk">"phone"</span>:<span class="ts">"50762342370"</span>,
-    <span class="tk">"triage"</span>:<span class="ts">"general"</span>,        <span class="tc">// general|urgent|emergency</span>
+    <span class="tk">"guardianId"</span>:<span class="ts">"3015d1d6-…"</span>, <span class="tk">"patientId"</span>:<span class="ts">"983e5cd7-…"</span>,  <span class="tc">// ★ para "ir a la cuenta / al perfil"</span>
+    <span class="tk">"accountCode"</span>:<span class="ts">"LUC-000002"</span>, <span class="tk">"insurance"</span>:<span class="ts">"Mapfre"</span>,     <span class="tc">// ★</span>
+    <span class="tk">"triage"</span>:<span class="ts">"emergency"</span>,      <span class="tc">// general|urgent|emergency</span>
+    <span class="tk">"derivation"</span>:<span class="ts">"emergency"</span>,  <span class="tc">// ★ home|appointment|emergency (casa/cita/urgencias)</span>
     <span class="tk">"attentionType"</span>:<span class="ts">"virtual"</span>, <span class="tk">"aiSummary"</span>:null, <span class="tk">"rating"</span>:null,  <span class="tc">// virtual|in_person</span>
+    <span class="tk">"doctorNote"</span>:null, <span class="tk">"reviewedBy"</span>:null, <span class="tk">"reviewedAt"</span>:null,  <span class="tc">// ★ auditoría médica</span>
+    <span class="tk">"techFailure"</span>:false,     <span class="tc">// ★ true si el turno falló por un problema técnico</span>
     <span class="tk">"startedAt"</span>:<span class="ts">"2026-07-10 15:44"</span>, <span class="tk">"closedAt"</span>:<span class="ts">"2026-07-10 15:50"</span>,
     <span class="tk">"status"</span>:<span class="ts">"closed"</span>,        <span class="tc">// active|waiting|closed</span>
     <span class="tk">"messages"</span>:[ { <span class="tk">"role"</span>:<span class="ts">"guardian"</span>, <span class="tk">"text"</span>:<span class="ts">"My child has a fever"</span>, <span class="tk">"time"</span>:<span class="ts">"…"</span>,
         <span class="tk">"type"</span>:<span class="ts">"text"</span>, <span class="tk">"alerts"</span>:[] } ]   <span class="tc">// role: guardian|bot|system</span>
   }
 ]</code></pre></div>
+
+        <h3>★ Filtros</h3>
+        <table><thead><tr><th>Parámetro</th><th>Valores</th><th>Para qué</th></tr></thead><tbody>
+          <tr><td><code>derivation</code></td><td><code>home</code> · <code>appointment</code> · <code>emergency</code></td><td>Filtrar por tipo de derivación (422 si mandas otro valor)</td></tr>
+          <tr><td><code>insurance_id</code></td><td>id de aseguradora</td><td>Filtro por seguro privado. Toma el del acudiente y, si no tiene, el del paciente</td></tr>
+          <tr><td><code>date_from</code> · <code>date_to</code></td><td><code>YYYY-MM-DD</code></td><td>Rango por fecha de apertura, ambos inclusivos</td></tr>
+          <tr><td><code>guardian_id</code></td><td>id del acudiente</td><td>“Ver todos los chats de esta cuenta”</td></tr>
+        </tbody></table>
+        <div class="single"><span class="cp" data-copy>Copiar</span><pre><code>GET /api/chats?derivation=emergency&amp;date_from=2026-07-01&amp;date_to=2026-07-31
+GET /api/chats?insurance_id=10
+GET /api/chats?guardian_id=3015d1d6-…</code></pre></div>
+
+        <h3>★ Comentario del médico auditor</h3>
+        <div class="ep-h"><span class="m post" style="background:#d9822b">patch</span><span class="path">/api/chats/{id}/note</span>
+          <span class="ret">→ <code>{ id, note, reviewedBy, reviewedAt }</code></span></div>
+        <div class="single"><span class="cp" data-copy>Copiar</span><pre><code><span class="tc">// request</span>  { <span class="tk">"note"</span>:<span class="ts">"Revisado. Se recomienda contactar al padre."</span>, <span class="tk">"reviewed_by"</span>:<span class="ts">"&lt;user_id&gt;"</span> }
+<span class="tc">// response</span> { <span class="tk">"id"</span>:<span class="ts">"…"</span>, <span class="tk">"note"</span>:<span class="ts">"…"</span>, <span class="tk">"reviewedBy"</span>:<span class="ts">"…"</span>, <span class="tk">"reviewedAt"</span>:<span class="ts">"2026-07-30 11:04"</span> }
+<span class="tc">// 404 si la sesión no existe. Guarda quién revisó y cuándo.</span></code></pre></div>
+
+        <div class="adm"><div class="t">✅ Corregido: chats en verde que debían ser rojos</div><div class="c">
+          <p>La clasificación se sobreescribía en <b>cada turno</b> y el valor por defecto es
+            <code>general</code>, así que una sesión derivada a urgencias volvía a verde en cuanto el
+            usuario decía “gracias” y el bot se despedía. Ahora es <b>monotónica</b>: solo escala
+            (general → urgent → emergency), nunca baja.</p>
+          <p>Se corrigieron además las sesiones históricas: <b>34 reclasificadas</b> — las urgencias
+            pasaron de 20 a <b>33</b> y las verdes bajaron de 81 a <b>47</b>. Si tenías capturas del
+            tablero anteriores al 30 de julio, los conteos ya no coinciden: los nuevos son los correctos.</p>
+          <p>Y si el acudiente cambia de hijo a mitad del chat, ahora se <b>cierra la sesión y se abre
+            otra</b>, para que <b>1 sesión = 1 paciente = 1 desenlace</b>.</p></div></div>
+
         <div class="adm warn"><div class="t">⚠️ Endpoint pesado</div><div class="c"><p>Trae <b>todos</b> los
           mensajes de cada chat. Próxima versión: <code>/api/chats</code> (lista) + <code>/api/chats/{id}</code>.</p></div></div>
       </section>
@@ -508,6 +561,14 @@ GET /api/portal-links?only_missing=true
           <tr><td><code>/api/stats/attention-type</code></td><td><code>{ type, value }[]</code></td></tr>
           <tr><td><code>/api/stats/csat</code></td><td><code>{ week, csat }[]</code></td></tr>
         </table></div>
+        <div class="adm warn"><div class="t">⚠️ <code>attention-type</code> NO es “casa / cita / urgencias”</div><div class="c">
+          <p><code>/api/stats/attention-type</code> devuelve <b>modalidad</b> (virtual vs presencial).
+            Para el gráfico de <b>derivaciones</b> que pide el tablero usa
+            <a href="#backlog"><code>/api/stats/chats</code></a> → <code>byDerivation</code>.
+            Son dos ejes distintos y el nombre se presta a confusión.</p></div></div>
+        <div class="adm"><div class="t">★ Hay 6 endpoints de estadística nuevos</div><div class="c">
+          <p>Resumen/North Star, cuentas, niños, chats, desempeño y seguros con filtros:
+            ver <a href="#backlog"><b>Backlog del tablero</b></a>.</p></div></div>
       </section>
 
       <section id="backlog">
@@ -615,24 +676,6 @@ GET /api/portal-links?only_missing=true
         <p style="font-size:14px;color:var(--muted)">Roles: <code>doctor · super_admin · admin · auditor_medico ·
           marketing · gerente_cuenta · oficial_privacidad · soporte_tecnico</code>.</p>
 
-        <h3>Chats · filtros nuevos y comentario del médico</h3>
-        <div class="ep-h"><span class="m get">get</span><span class="path">/api/chats</span>
-          <span class="ret">· <code>?derivation=&amp;insurance_id=&amp;date_from=&amp;date_to=&amp;guardian_id=</code></span></div>
-        <table><thead><tr><th>Filtro</th><th>Valores</th></tr></thead><tbody>
-          <tr><td><code>derivation</code></td><td><code>home</code> · <code>appointment</code> · <code>emergency</code> (422 si es otro)</td></tr>
-          <tr><td><code>insurance_id</code></td><td>id de aseguradora (acudiente, o paciente si el acudiente no tiene)</td></tr>
-          <tr><td><code>date_from</code> / <code>date_to</code></td><td><code>YYYY-MM-DD</code>, inclusivos</td></tr>
-          <tr><td><code>guardian_id</code></td><td>para “ver todos los chats de esta cuenta”</td></tr>
-        </tbody></table>
-        <p style="font-size:14px">Cada chat ahora trae además: <code>guardianId</code>, <code>patientId</code>,
-          <code>accountCode</code>, <code>insurance</code>, <code>derivation</code>, <code>doctorNote</code>,
-          <code>reviewedBy</code>, <code>reviewedAt</code> y <code>techFailure</code> — con eso armas el menú de
-          “ir a la cuenta / ir al historial” sin pedir nada más.</p>
-        <div class="ep-h"><span class="m post">patch</span><span class="path">/api/chats/{id}/note</span>
-          <span class="ret">→ comentario del médico auditor</span></div>
-        <div class="single"><span class="cp" data-copy>Copiar</span><pre><code><span class="tc">// request</span>  { <span class="tk">"note"</span>:<span class="ts">"Revisado. Se recomienda contactar al padre."</span>, <span class="tk">"reviewed_by"</span>:<span class="ts">"&lt;user_id&gt;"</span> }
-<span class="tc">// response</span> { <span class="tk">"id"</span>:<span class="ts">"…"</span>, <span class="tk">"note"</span>:<span class="ts">"…"</span>, <span class="tk">"reviewedBy"</span>:<span class="ts">"…"</span>, <span class="tk">"reviewedAt"</span>:<span class="ts">"2026-07-30T…"</span> }</code></pre></div>
-
         <h3>Catálogo geográfico</h3>
         <div class="ep-h"><span class="m get">get</span><span class="path">/api/geo</span>
           <span class="ret">→ país → provincias/departamentos</span></div>
@@ -642,16 +685,28 @@ GET /api/portal-links?only_missing=true
           Argentina (24). Seed propio en BD — sin API externa, sin latencia extra.</p>
 
         <h3>Campos nuevos en endpoints existentes</h3>
+        <p style="font-size:14px">Están documentados <b>en su propia sección</b>, marcados con ★:</p>
         <table><thead><tr><th>Endpoint</th><th>Campos añadidos</th></tr></thead><tbody>
-          <tr><td><code>/api/guardians</code></td><td><code>accountCode</code>, <code>gender</code>, <code>address</code>, <code>province</code>, <code>chats</code></td></tr>
-          <tr><td><code>/api/patients</code></td><td><code>idNumber</code> (cédula), <code>school</code>, <code>accountCode</code>, <code>address</code>, <code>chats</code></td></tr>
-          <tr><td><code>/api/chats</code></td><td>ver arriba</td></tr>
+          <tr><td><a href="#guardians"><code>/api/guardians</code></a></td>
+              <td><code>accountCode</code> · <code>gender</code> · <code>address</code> · <code>province</code> · <code>chats</code><br>
+                  <span style="color:var(--muted)">PATCH acepta <code>gender</code> y <code>address</code></span></td></tr>
+          <tr><td><a href="#patients"><code>/api/patients</code></a></td>
+              <td><code>idNumber</code> (cédula) · <code>school</code> · <code>accountCode</code> · <code>address</code> · <code>chats</code><br>
+                  <span style="color:var(--muted)">PATCH acepta <code>idNumber</code> y <code>school</code></span></td></tr>
+          <tr><td><a href="#chats"><code>/api/chats</code></a></td>
+              <td>5 filtros nuevos · <code>guardianId</code> · <code>patientId</code> · <code>accountCode</code> ·
+                  <code>insurance</code> · <code>derivation</code> · <code>doctorNote</code> ·
+                  <code>reviewedBy</code> · <code>reviewedAt</code> · <code>techFailure</code><br>
+                  <span style="color:var(--muted)">+ <code>PATCH /api/chats/{id}/note</code></span></td></tr>
         </tbody></table>
-        <p style="font-size:14px;color:var(--muted)">Ambos <code>PATCH</code> aceptan los campos nuevos:
-          <code>/api/guardians/{id}</code> → <code>gender</code>, <code>address</code>;
-          <code>/api/patients/{id}</code> → <code>idNumber</code>, <code>school</code>.
-          <b>Nota:</b> <code>nationalId</code> sigue siendo el número de <b>CSS</b> (seguridad social);
-          la cédula es el campo nuevo <code>idNumber</code>.</p>
+
+        <div class="adm warn"><div class="t">Qué necesita el bot para que estos datos existan</div><div class="c">
+          <p>Los campos nuevos <b>vienen <code>null</code> en los registros anteriores al 30 de julio de 2026</b>:
+            la columna se creó ese día y solo se llena en registros nuevos. El formulario de registro ya pide
+            género, país, provincia, dirección, cédula y centro educativo.</p>
+          <p><code>techFailure</code> empieza a contar desde esa misma fecha, así que hoy verás 0.
+            <code>csat</code> seguirá en <code>null</code> hasta que el bot implemente la encuesta post-consulta.</p>
+        </div></div>
       </section>
 
       <section id="botstatus">
