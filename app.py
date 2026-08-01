@@ -1528,7 +1528,7 @@ def stats_accounts():
     """Sección Cuentas: captación mensual y distribución por plan, aseguradora, país y género."""
     def _f():
         by_month = _q(
-            "SELECT DATE_FORMAT(created_at,'%%Y-%%m') month, COUNT(*) value FROM users "
+            "SELECT DATE_FORMAT(created_at,'%Y-%m') month, COUNT(*) value FROM users "
             "WHERE role='guardian' AND deleted_at IS NULL GROUP BY month ORDER BY month"
         )
         by_plan = _q(
@@ -1564,7 +1564,7 @@ def stats_children():
         total = int(_q("SELECT COUNT(*) c FROM dependents")[0]["c"] or 0)
         accounts = int(_q("SELECT COUNT(*) c FROM guardians")[0]["c"] or 0)
         by_month = _q(
-            "SELECT DATE_FORMAT(created_at,'%%Y-%%m') month, COUNT(*) value FROM dependents "
+            "SELECT DATE_FORMAT(created_at,'%Y-%m') month, COUNT(*) value FROM dependents "
             "GROUP BY month ORDER BY month"
         )
         by_age = _q(
@@ -1598,7 +1598,7 @@ def stats_chats():
         )[0]
         total = int(st["total"] or 0)
         by_month = _q(
-            "SELECT DATE_FORMAT(opened_at,'%%Y-%%m') month, COUNT(*) value FROM chat_sessions "
+            "SELECT DATE_FORMAT(opened_at,'%Y-%m') month, COUNT(*) value FROM chat_sessions "
             "GROUP BY month ORDER BY month"
         )
         deriv = _q(
@@ -1606,7 +1606,7 @@ def stats_chats():
             "JOIN classification cl ON cl.id=cs.classification_id GROUP BY cl.name"
         )
         curves = _q(
-            "SELECT DATE_FORMAT(cs.opened_at,'%%Y-%%m') month, cl.name, COUNT(*) value "
+            "SELECT DATE_FORMAT(cs.opened_at,'%Y-%m') month, cl.name, COUNT(*) value "
             "FROM chat_sessions cs JOIN classification cl ON cl.id=cs.classification_id "
             "GROUP BY month, cl.name ORDER BY month"
         )
