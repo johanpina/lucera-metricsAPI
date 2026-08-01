@@ -1456,8 +1456,16 @@ DERIVATION = {"general": "home", "urgente": "appointment", "emergencia": "emerge
 
 # Una cuenta es "premium" si tiene al menos un pago confirmado.
 _PREMIUM_SQL = "EXISTS (SELECT 1 FROM payments p WHERE p.user_id=u.id AND p.status='confirmed')"
-# Sesión que el usuario dejó morir por inactividad = abandonada.
-_ABANDONED = "closed_inactivity"
+
+# ¿La sesión recibió al menos una orientación del bot?
+#
+# OJO con "abandonada": cerrar por inactividad NO es abandono. En WhatsApp la gente casi
+# nunca se despide — recibe su respuesta y deja de escribir, y el barredor cierra la sesión
+# a los 30 min. Contar esas como abandonadas inflaba el indicador (76 de 143) y hundía el
+# completion rate sin motivo. Abandonada = el usuario escribió y NUNCA obtuvo respuesta.
+# Las cerradas por inactividad cuentan como CERRADAS, igual que antes.
+_ANSWERED = ("EXISTS (SELECT 1 FROM messages m WHERE m.session_id=cs.id "
+             "AND m.sender_role IN ('bot','assistant'))")
 
 
 def _month_series(rows: list[dict]) -> list[dict]:
@@ -1490,8 +1498,8 @@ def stats_summary():
         premium = int(acc["premium"] or 0)
         revenue = _q("SELECT COALESCE(SUM(amount_usd),0) v FROM payments WHERE status='confirmed'")[0]["v"]
         ses = _q(
-            f"""SELECT COUNT(*) total, SUM(fsm_state IN ('resolved','closed_user')) completed,
-                       SUM(fsm_state='{_ABANDONED}') abandoned FROM chat_sessions"""
+            f"""SELECT COUNT(*) total, SUM({_ANSWERED}) completed,
+                       SUM(NOT {_ANSWERED}) abandoned FROM chat_sessions cs"""
         )[0]
         ses_total = int(ses["total"] or 0)
         emerg = int(_q(
@@ -1591,10 +1599,11 @@ def stats_children():
 def stats_chats():
     """Sección Chats: estados, derivaciones (casa/cita/urgencias) y las 3 curvas por mes."""
     def _f():
+        # Cerradas = TODAS las cerradas, incluidas las de inactividad (como estaba antes).
         st = _q(
             f"""SELECT COUNT(*) total, SUM(status='active') open_,
-                       SUM(status='closed' AND fsm_state<>'{_ABANDONED}') closed_,
-                       SUM(fsm_state='{_ABANDONED}') abandoned FROM chat_sessions"""
+                       SUM(status='closed') closed_,
+                       SUM(NOT {_ANSWERED}) abandoned FROM chat_sessions cs"""
         )[0]
         total = int(st["total"] or 0)
         by_month = _q(
