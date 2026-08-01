@@ -491,19 +491,24 @@ def _guardian_row(g: dict, kids: list[dict]) -> dict:
     )
     return {
         "id": g["id"], "phone": g["phone"], "email": g["email"], "name": g["name"],
+        "accountCode": g.get("account_code"), "gender": g.get("gender"),
         "relationship": REL_OUT.get(g["rel"], "guardian"),
         "country": g.get("country") or _country(g["phone"]),   # nativo; fallback al prefijo del teléfono
+        "province": g.get("province") or "", "address": g.get("address"),
         "city": g["city"] or g["province"] or "", "status": GSTATUS_OUT.get(g["ustatus"], "active"),
         "plan": _plan(g["cycle"]), "insurance": insurance, "registeredAt": _clean(g["created_at"]),
         "portalEnabled": bool(g.get("portal_enabled")),   # ¿ya fijó contraseña del portal?
+        "chats": int(g.get("chats") or 0),                # nº de consultas de la cuenta
         "children": kids,
     }
 
 
 _G_SELECT = """SELECT g.id, g.full_name AS name, g.relationship_type AS rel, g.country, g.city, g.province,
+    g.account_code, g.gender, g.address,
     g.insurance_company_id AS ins_id, ic.name AS ins_name, g.policy_number AS policy,
     u.phone_number AS phone, u.email, u.status AS ustatus, u.created_at,
     LEFT(u.password_hash, 6) = 'pbkdf2' AS portal_enabled,
+    (SELECT COUNT(*) FROM chat_sessions cs WHERE cs.guardian_id=g.id) AS chats,
     (SELECT p.billing_cycle FROM payments p WHERE p.user_id=u.id AND p.status='confirmed'
       ORDER BY p.confirmed_at DESC LIMIT 1) AS cycle
     FROM guardians g JOIN users u ON u.id=g.user_id
@@ -609,6 +614,8 @@ class GuardianUpdate(BaseModel):
     country: str | None = None       # país editable (guardians.country)
     city: str | None = None
     province: str | None = None
+    address: str | None = None       # dirección del acudiente
+    gender: str | None = None        # femenino|masculino|otro|prefiere_no_decir
     relationship: str | None = None
     status: str | None = None
     plan: str | None = None          # free|premium_monthly|premium_annual
@@ -638,6 +645,12 @@ def guardian_update(gid: str, body: GuardianUpdate):
         gsets.append("relationship_type=%s"); gargs.append(rel)
     if body.insuranceId is not None:
         gsets.append("insurance_company_id=%s"); gargs.append(body.insuranceId or None)
+    if body.address is not None:
+        gsets.append("address=%s"); gargs.append(body.address.strip() or None)
+    if body.gender is not None:
+        if body.gender not in ("femenino", "masculino", "otro", "prefiere_no_decir"):
+            raise HTTPException(422, "gender must be: femenino|masculino|otro|prefiere_no_decir")
+        gsets.append("gender=%s"); gargs.append(body.gender)
     if body.policyNumber is not None:
         gsets.append("policy_number=%s"); gargs.append(body.policyNumber or None)
     if gsets:
@@ -722,10 +735,13 @@ def portal_links_bulk(page: int = 1, page_limit: int = 50, only_missing: bool = 
 
 # ── Patients (CRUD) ──────────────────────────────────────────────────────────
 _P_SELECT = """SELECT d.id, d.full_name AS name, d.birthday, d.css_number AS national_id,
+    d.id_number, d.school,
     d.blood_type, d.weight_kg, d.known_conditions, d.allergies,
     d.insurance_company_id AS ins_id, ic.name AS ins_name, d.policy_number AS policy,
-    g.id AS guardian_id, g.full_name AS guardian, u.phone_number AS phone, u.status AS ustatus,
-    (SELECT MAX(cs.opened_at) FROM chat_sessions cs WHERE cs.dependent_id=d.id) AS last
+    g.id AS guardian_id, g.full_name AS guardian, g.account_code, g.address,
+    u.phone_number AS phone, u.status AS ustatus,
+    (SELECT MAX(cs.opened_at) FROM chat_sessions cs WHERE cs.dependent_id=d.id) AS last,
+    (SELECT COUNT(*) FROM chat_sessions cs WHERE cs.dependent_id=d.id) AS chats
     FROM dependents d JOIN guardian_dependent gd ON gd.dependent_id=d.id
     JOIN guardians g ON g.id=gd.guardian_id JOIN users u ON u.id=g.user_id
     LEFT JOIN insurance_companies ic ON ic.id=d.insurance_company_id"""
@@ -741,8 +757,12 @@ def _patient_row(r: dict) -> dict:
             {"id": r["ins_id"], "name": r["ins_name"], "policyNumber": r.get("policy") or None}
             if r.get("ins_id") else None
         ),
+        # nationalId = número de CSS (seguridad social). idNumber = cédula/documento del paciente.
+        "idNumber": r.get("id_number"), "school": r.get("school"),
         "guardianId": r["guardian_id"], "guardian": r["guardian"], "phone": r["phone"],
+        "accountCode": r.get("account_code"), "address": r.get("address"),
         "status": PSTATUS_OUT.get(r["ustatus"], "pending"),
+        "chats": int(r.get("chats") or 0),                 # nº de consultas del paciente
         "lastConsultation": _clean(r["last"]) if r["last"] else "",
     }
 
@@ -790,6 +810,8 @@ class PatientUpdate(BaseModel):
     allergies: list[str] | None = None
     insuranceId: int | None = None
     policyNumber: str | None = None
+    idNumber: str | None = None   # cédula/documento del paciente
+    school: str | None = None     # centro educativo
 
 
 @app.post("/api/patients", dependencies=[Depends(require_auth)], status_code=201)
@@ -840,6 +862,10 @@ def patient_update(pid: str, body: PatientUpdate):
         sets.append("insurance_company_id=%s"); args.append(body.insuranceId)
     if body.policyNumber is not None:
         sets.append("policy_number=%s"); args.append(body.policyNumber or None)
+    if body.idNumber is not None:
+        sets.append("id_number=%s"); args.append(body.idNumber or None)
+    if body.school is not None:
+        sets.append("school=%s"); args.append(body.school or None)
     if sets:
         _exec(f"UPDATE dependents SET {', '.join(sets)} WHERE id=%s", tuple(args + [pid]))
     return patient_get(pid)
@@ -859,19 +885,52 @@ def patient_delete(pid: str):
 
 # ── Chats (paginated) ────────────────────────────────────────────────────────
 @app.get("/api/chats", dependencies=[Depends(require_auth)])
-def chats(page: int = 1, page_limit: int = 20):
+def chats(page: int = 1, page_limit: int = 20, derivation: str | None = None,
+          insurance_id: int | None = None, date_from: str | None = None, date_to: str | None = None,
+          guardian_id: str | None = None):
+    """Chats con filtros.
+
+    `derivation`: home | appointment | emergency (mapea a classification general/urgente/emergencia).
+    `insurance_id`: seguro del acudiente o, si no tiene, del paciente.
+    """
     page, page_limit, off = _pag(page, page_limit)
-    total = _q("SELECT COUNT(*) c FROM chat_sessions")[0]["c"]
+    where, args = ["1=1"], []
+    if derivation:
+        cls = {v: k for k, v in DERIVATION.items()}.get(derivation)
+        if cls is None:
+            raise HTTPException(422, "derivation must be one of: home, appointment, emergency")
+        where.append("cl.name = %s")
+        args.append(cls)
+    if insurance_id is not None:
+        where.append("COALESCE(g.insurance_company_id, d.insurance_company_id) = %s")
+        args.append(insurance_id)
+    if date_from:
+        where.append("cs.opened_at >= %s")
+        args.append(date_from)
+    if date_to:
+        where.append("cs.opened_at < DATE_ADD(%s, INTERVAL 1 DAY)")
+        args.append(date_to)
+    if guardian_id:
+        where.append("cs.guardian_id = %s")
+        args.append(guardian_id)
+    w = " AND ".join(where)
+    _joins = ("""FROM chat_sessions cs JOIN guardians g ON g.id=cs.guardian_id JOIN users u ON u.id=g.user_id
+        LEFT JOIN dependents d ON d.id=cs.dependent_id LEFT JOIN classification cl ON cl.id=cs.classification_id""")
+
+    total = _q(f"SELECT COUNT(*) c {_joins} WHERE {w}", tuple(args))[0]["c"]
     ses = _q(
-        """SELECT cs.id, g.full_name AS guardian, d.full_name AS patient, u.phone_number AS phone,
+        f"""SELECT cs.id, g.full_name AS guardian, g.account_code, d.full_name AS patient,
+               u.phone_number AS phone, cs.guardian_id, cs.dependent_id,
                cl.name AS triage, cs.appointment_type, cs.summary AS ai_summary, cs.feedback_score AS rating,
                cs.status, cs.fsm_state, cs.opened_at AS started_at, cs.closed_at AS closed_at,
+               cs.doctor_note, cs.reviewed_by, cs.reviewed_at, cs.tech_failure,
+               (SELECT ic.name FROM insurance_companies ic
+                  WHERE ic.id = COALESCE(g.insurance_company_id, d.insurance_company_id)) AS insurance,
                (SELECT content FROM messages m WHERE m.session_id=cs.id ORDER BY m.created_at DESC LIMIT 1) AS last_message,
                (SELECT created_at FROM messages m WHERE m.session_id=cs.id ORDER BY m.created_at DESC LIMIT 1) AS time
-        FROM chat_sessions cs JOIN guardians g ON g.id=cs.guardian_id JOIN users u ON u.id=g.user_id
-        LEFT JOIN dependents d ON d.id=cs.dependent_id LEFT JOIN classification cl ON cl.id=cs.classification_id
+        {_joins} WHERE {w}
         ORDER BY cs.opened_at DESC LIMIT %s OFFSET %s""",
-        (page_limit, off),
+        tuple(args) + (page_limit, off),
     )
     ids = [s["id"] for s in ses]
     by_s: dict = {}
@@ -898,9 +957,17 @@ def chats(page: int = 1, page_limit: int = 20):
 
     items = [{
         "id": s["id"], "guardian": s["guardian"], "patient": s["patient"] or "", "phone": s["phone"],
+        "guardianId": s["guardian_id"], "patientId": s["dependent_id"], "accountCode": s["account_code"],
+        "insurance": s["insurance"],
         "triage": TRIAGE.get(s["triage"], "general"),
+        # Derivación clínica (casa/cita/urgencias). NO confundir con attentionType, que es la
+        # modalidad (virtual/presencial) — son dos ejes distintos.
+        "derivation": DERIVATION.get(s["triage"], "home") if s["triage"] else None,
         "attentionType": "in_person" if (s["appointment_type"] or "").lower().startswith("pres") else "virtual",
         "aiSummary": s["ai_summary"] or None, "rating": int(s["rating"]) if s["rating"] is not None else None,
+        "doctorNote": s["doctor_note"], "reviewedBy": s["reviewed_by"],
+        "reviewedAt": _clean(s["reviewed_at"]) if s["reviewed_at"] else None,
+        "techFailure": bool(s["tech_failure"]),
         "lastMessage": (s["last_message"] or "")[:200], "time": _clean(s["time"]) if s["time"] else "",
         "startedAt": _clean(s["started_at"]) if s["started_at"] else "",
         "closedAt": _clean(s["closed_at"]) if s["closed_at"] else None,
@@ -1376,6 +1443,373 @@ def portal_payments(gid: str = Depends(require_guardian)):
     rows = _q(f"{_PAY_SELECT} WHERE u.id=(SELECT user_id FROM guardians WHERE id=%s) "
               "ORDER BY p.created_at DESC", (gid,))
     return [_payment_row(r) for r in rows]
+
+
+# ═════════════════════════════════════════════════════════════════════════════
+# BACKLOG DEL TABLERO — agregaciones nuevas
+#
+# Vocabulario de derivación (IMPORTANTE): el tablero habla de "casa / cita / urgencias".
+# Eso NO es `attention_type` (virtual vs presencial, que es otro eje), sino `classification`:
+#     general → home  ·  urgente → appointment  ·  emergencia → emergency
+# ═════════════════════════════════════════════════════════════════════════════
+DERIVATION = {"general": "home", "urgente": "appointment", "emergencia": "emergency"}
+
+# Una cuenta es "premium" si tiene al menos un pago confirmado.
+_PREMIUM_SQL = "EXISTS (SELECT 1 FROM payments p WHERE p.user_id=u.id AND p.status='confirmed')"
+# Sesión que el usuario dejó morir por inactividad = abandonada.
+_ABANDONED = "closed_inactivity"
+
+
+def _month_series(rows: list[dict]) -> list[dict]:
+    return [{"month": str(r["month"]), "value": int(r["value"] or 0)} for r in rows]
+
+
+@app.get("/api/geo", dependencies=[Depends(require_auth)])
+def geo():
+    """Catálogo país → provincias/departamentos (Panamá, Colombia, Argentina)."""
+    def _f():
+        cs = _q("SELECT id, code, name, phone_code FROM countries WHERE active=1 ORDER BY name")
+        st = _q("SELECT country_id, name FROM states WHERE active=1 ORDER BY name")
+        by: dict = {}
+        for s in st:
+            by.setdefault(s["country_id"], []).append(s["name"])
+        return [{"code": c["code"], "name": c["name"], "phoneCode": c["phone_code"],
+                 "states": by.get(c["id"], [])} for c in cs]
+    return _cached("geo", 3600, _f)
+
+
+@app.get("/api/stats/summary", dependencies=[Depends(require_auth)])
+def stats_summary():
+    """North Star del Resumen: cuentas, conversión, revenue, CSAT, uso y seguridad."""
+    def _f():
+        acc = _q(
+            f"""SELECT COUNT(*) total, SUM(u.status='active') active, SUM({_PREMIUM_SQL}) premium
+                FROM users u WHERE u.role='guardian' AND u.deleted_at IS NULL"""
+        )[0]
+        total = int(acc["total"] or 0)
+        premium = int(acc["premium"] or 0)
+        revenue = _q("SELECT COALESCE(SUM(amount_usd),0) v FROM payments WHERE status='confirmed'")[0]["v"]
+        ses = _q(
+            f"""SELECT COUNT(*) total, SUM(fsm_state IN ('resolved','closed_user')) completed,
+                       SUM(fsm_state='{_ABANDONED}') abandoned FROM chat_sessions"""
+        )[0]
+        ses_total = int(ses["total"] or 0)
+        emerg = int(_q(
+            "SELECT COUNT(*) c FROM chat_sessions cs JOIN classification cl ON cl.id=cs.classification_id "
+            "WHERE cl.name='emergencia'"
+        )[0]["c"] or 0)
+        csat = _q("SELECT AVG(feedback_score) v FROM chat_sessions WHERE feedback_score IS NOT NULL")[0]["v"]
+        return {
+            "accounts": {
+                "total": total, "active": int(acc["active"] or 0),
+                "free": total - premium, "premium": premium,
+                "conversionRate": round(premium / total * 100, 1) if total else 0.0,
+            },
+            "revenueUsd": float(revenue or 0),
+            # null = aún no se recoge feedback (falta la encuesta post-consulta en el bot).
+            "csat": round(float(csat) / 5 * 100, 1) if csat is not None else None,
+            "usage": {
+                "sessions": ses_total,
+                "sessionCompletionRate": round(int(ses["completed"] or 0) / ses_total * 100, 1) if ses_total else 0.0,
+                "abandoned": int(ses["abandoned"] or 0),
+            },
+            "safety": {
+                "redFlagsToEmergency": emerg,
+                "redFlagRate": round(emerg / ses_total * 100, 1) if ses_total else 0.0,
+                # Requiere preguntar en el follow-up si acudió; aún no se captura.
+                "reportedErRate": None,
+            },
+        }
+    return _cached("stats:summary", 60, _f)
+
+
+@app.get("/api/stats/accounts", dependencies=[Depends(require_auth)])
+def stats_accounts():
+    """Sección Cuentas: captación mensual y distribución por plan, aseguradora, país y género."""
+    def _f():
+        by_month = _q(
+            "SELECT DATE_FORMAT(created_at,'%%Y-%%m') month, COUNT(*) value FROM users "
+            "WHERE role='guardian' AND deleted_at IS NULL GROUP BY month ORDER BY month"
+        )
+        by_plan = _q(
+            f"""SELECT CASE WHEN {_PREMIUM_SQL} THEN 'premium' ELSE 'free' END plan, COUNT(*) value
+                FROM users u WHERE u.role='guardian' AND u.deleted_at IS NULL GROUP BY plan"""
+        )
+        by_ins = _q(
+            "SELECT COALESCE(ic.name,'Sin seguro') name, COUNT(*) value FROM guardians g "
+            "LEFT JOIN insurance_companies ic ON ic.id=g.insurance_company_id GROUP BY name ORDER BY value DESC"
+        )
+        by_country = _q(
+            "SELECT COALESCE(NULLIF(country,''),'Sin definir') name, COUNT(*) value "
+            "FROM guardians GROUP BY name ORDER BY value DESC"
+        )
+        by_gender = _q(
+            "SELECT COALESCE(gender,'prefiere_no_decir') name, COUNT(*) value "
+            "FROM guardians GROUP BY name ORDER BY value DESC"
+        )
+        return {
+            "byMonth": _month_series(by_month),
+            "byPlan": [{"plan": r["plan"], "value": int(r["value"])} for r in by_plan],
+            "byInsurance": [{"name": r["name"], "value": int(r["value"])} for r in by_ins],
+            "byCountry": [{"name": r["name"], "value": int(r["value"])} for r in by_country],
+            "byGender": [{"name": r["name"], "value": int(r["value"])} for r in by_gender],
+        }
+    return _cached("stats:accounts", 60, _f)
+
+
+@app.get("/api/stats/children", dependencies=[Depends(require_auth)])
+def stats_children():
+    """Sección Niños: total, captación mensual, promedio por cuenta y pirámide de edad."""
+    def _f():
+        total = int(_q("SELECT COUNT(*) c FROM dependents")[0]["c"] or 0)
+        accounts = int(_q("SELECT COUNT(*) c FROM guardians")[0]["c"] or 0)
+        by_month = _q(
+            "SELECT DATE_FORMAT(created_at,'%%Y-%%m') month, COUNT(*) value FROM dependents "
+            "GROUP BY month ORDER BY month"
+        )
+        by_age = _q(
+            """SELECT CASE
+                    WHEN TIMESTAMPDIFF(YEAR, birthday, CURDATE()) < 1  THEN '0-1'
+                    WHEN TIMESTAMPDIFF(YEAR, birthday, CURDATE()) < 3  THEN '1-2'
+                    WHEN TIMESTAMPDIFF(YEAR, birthday, CURDATE()) < 6  THEN '3-5'
+                    WHEN TIMESTAMPDIFF(YEAR, birthday, CURDATE()) < 12 THEN '6-11'
+                    ELSE '12+' END AS bucket, COUNT(*) value
+               FROM dependents GROUP BY bucket"""
+        )
+        order = {"0-1": 0, "1-2": 1, "3-5": 2, "6-11": 3, "12+": 4}
+        by_age.sort(key=lambda r: order.get(r["bucket"], 9))
+        return {
+            "total": total,
+            "perAccountAvg": round(total / accounts, 2) if accounts else 0.0,
+            "byMonth": _month_series(by_month),
+            "byAge": [{"range": r["bucket"], "value": int(r["value"])} for r in by_age],
+        }
+    return _cached("stats:children", 60, _f)
+
+
+@app.get("/api/stats/chats", dependencies=[Depends(require_auth)])
+def stats_chats():
+    """Sección Chats: estados, derivaciones (casa/cita/urgencias) y las 3 curvas por mes."""
+    def _f():
+        st = _q(
+            f"""SELECT COUNT(*) total, SUM(status='active') open_,
+                       SUM(status='closed' AND fsm_state<>'{_ABANDONED}') closed_,
+                       SUM(fsm_state='{_ABANDONED}') abandoned FROM chat_sessions"""
+        )[0]
+        total = int(st["total"] or 0)
+        by_month = _q(
+            "SELECT DATE_FORMAT(opened_at,'%%Y-%%m') month, COUNT(*) value FROM chat_sessions "
+            "GROUP BY month ORDER BY month"
+        )
+        deriv = _q(
+            "SELECT cl.name, COUNT(*) value FROM chat_sessions cs "
+            "JOIN classification cl ON cl.id=cs.classification_id GROUP BY cl.name"
+        )
+        curves = _q(
+            "SELECT DATE_FORMAT(cs.opened_at,'%%Y-%%m') month, cl.name, COUNT(*) value "
+            "FROM chat_sessions cs JOIN classification cl ON cl.id=cs.classification_id "
+            "GROUP BY month, cl.name ORDER BY month"
+        )
+        months = sorted({str(r["month"]) for r in curves})
+        idx = {(str(r["month"]), r["name"]): int(r["value"]) for r in curves}
+        accounts = int(_q("SELECT COUNT(*) c FROM guardians")[0]["c"] or 0)
+        emerg = sum(int(r["value"]) for r in deriv if r["name"] == "emergencia")
+        return {
+            "total": total,
+            "byState": {"open": int(st["open_"] or 0), "closed": int(st["closed_"] or 0),
+                        "abandoned": int(st["abandoned"] or 0), "total": total},
+            "byMonth": _month_series(by_month),
+            "byDerivation": [
+                {"type": DERIVATION.get(r["name"], r["name"]), "value": int(r["value"]),
+                 "percent": round(int(r["value"]) / total * 100, 1) if total else 0.0}
+                for r in deriv
+            ],
+            "derivationCurves": [
+                {"month": m, "home": idx.get((m, "general"), 0),
+                 "appointment": idx.get((m, "urgente"), 0), "emergency": idx.get((m, "emergencia"), 0)}
+                for m in months
+            ],
+            "perAccountAvg": round(total / accounts, 2) if accounts else 0.0,
+            "emergenciesPerAccountAvg": round(emerg / accounts, 2) if accounts else 0.0,
+        }
+    return _cached("stats:chats", 60, _f)
+
+
+@app.get("/api/stats/performance", dependencies=[Depends(require_auth)])
+def stats_performance():
+    """Sección Desempeño. Ojo: `churnRate` es una APROXIMACIÓN por inactividad (ver `note`)."""
+    def _f():
+        ttfc = _q(
+            """SELECT AVG(TIMESTAMPDIFF(MINUTE, u.created_at, f.first_open)) v FROM users u
+               JOIN guardians g ON g.user_id=u.id
+               JOIN (SELECT guardian_id, MIN(opened_at) first_open FROM chat_sessions GROUP BY guardian_id) f
+                 ON f.guardian_id=g.id"""
+        )[0]["v"]
+        ttr = _q(
+            "SELECT AVG(TIMESTAMPDIFF(MINUTE, opened_at, closed_at)) v FROM chat_sessions "
+            "WHERE closed_at IS NOT NULL AND fsm_state IN ('resolved','closed_user')"
+        )[0]["v"]
+        accounts = int(_q("SELECT COUNT(*) c FROM guardians")[0]["c"] or 0)
+        active30 = int(_q(
+            "SELECT COUNT(DISTINCT guardian_id) c FROM chat_sessions "
+            "WHERE opened_at >= DATE_SUB(NOW(), INTERVAL 30 DAY)"
+        )[0]["c"] or 0)
+        idle60 = int(_q(
+            """SELECT COUNT(*) c FROM guardians g WHERE NOT EXISTS (
+                 SELECT 1 FROM chat_sessions cs WHERE cs.guardian_id=g.id
+                 AND cs.opened_at >= DATE_SUB(NOW(), INTERVAL 60 DAY))"""
+        )[0]["c"] or 0)
+        free_capped = int(_q(
+            f"""SELECT COUNT(*) c FROM users u
+                WHERE u.role='guardian' AND u.deleted_at IS NULL
+                  AND u.free_sessions_used > 0 AND NOT {_PREMIUM_SQL}"""
+        )[0]["c"] or 0)
+        tech = int(_q("SELECT COUNT(*) c FROM chat_sessions WHERE tech_failure=1")[0]["c"] or 0)
+        ses_total = int(_q("SELECT COUNT(*) c FROM chat_sessions")[0]["c"] or 0)
+        return {
+            "timeToFirstConsultMin": round(float(ttfc), 1) if ttfc is not None else None,
+            "timeToResolutionMin": round(float(ttr), 1) if ttr is not None else None,
+            "activeAccountRate": round(active30 / accounts * 100, 1) if accounts else 0.0,
+            "churnRate": round(idle60 / accounts * 100, 1) if accounts else 0.0,
+            "freeLimitNoConversion": free_capped,
+            "techFailureSessions": tech,
+            "techFailureRate": round(tech / ses_total * 100, 2) if ses_total else 0.0,
+            # Falta definir qué cuenta como onboarding "completo" (¿registro + hijo + 1 consulta?).
+            "onboardingCompletionRate": None,
+            "note": "churnRate = cuentas sin ninguna consulta en los últimos 60 días "
+                    "(aproximación por inactividad, no por cancelación de pago).",
+        }
+    return _cached("stats:performance", 60, _f)
+
+
+@app.get("/api/stats/insurance", dependencies=[Depends(require_auth)])
+def stats_insurance(insurance_id: int | None = None, date_from: str | None = None,
+                    date_to: str | None = None):
+    """Seguros Médicos con filtros. Barras segmentadas casa/cita/urgencias por aseguradora.
+
+    El seguro se toma del ACUDIENTE (la póliza suele ser suya) y, si no tiene, del paciente.
+    """
+    key = f"stats:ins:{insurance_id}:{date_from}:{date_to}"
+
+    def _f():
+        where, args = ["1=1"], []
+        if insurance_id is not None:
+            where.append("COALESCE(g.insurance_company_id, d.insurance_company_id) = %s")
+            args.append(insurance_id)
+        if date_from:
+            where.append("cs.opened_at >= %s")
+            args.append(date_from)
+        if date_to:
+            where.append("cs.opened_at < DATE_ADD(%s, INTERVAL 1 DAY)")
+            args.append(date_to)
+        w = " AND ".join(where)
+        rows = _q(
+            f"""SELECT COALESCE(ic.name,'Sin seguro') name, cl.name AS cls, COUNT(*) value
+                FROM chat_sessions cs
+                JOIN guardians g ON g.id=cs.guardian_id
+                LEFT JOIN dependents d ON d.id=cs.dependent_id
+                LEFT JOIN insurance_companies ic
+                       ON ic.id = COALESCE(g.insurance_company_id, d.insurance_company_id)
+                LEFT JOIN classification cl ON cl.id=cs.classification_id
+                WHERE {w} GROUP BY name, cls""",
+            tuple(args),
+        )
+        agg: dict = {}
+        for r in rows:
+            e = agg.setdefault(r["name"], {"insurance": r["name"], "home": 0, "appointment": 0,
+                                           "emergency": 0, "total": 0})
+            n = int(r["value"])
+            e["total"] += n
+            if r["cls"]:
+                e[DERIVATION.get(r["cls"], "home")] += n
+        items = sorted(agg.values(), key=lambda x: -x["total"])
+        return {
+            "items": items,
+            "totals": {"consultations": sum(i["total"] for i in items),
+                       "emergencies": sum(i["emergency"] for i in items)},
+            "filters": {"insuranceId": insurance_id, "dateFrom": date_from, "dateTo": date_to},
+        }
+    return _cached(key, 60, _f)
+
+
+@app.get("/api/accounts", dependencies=[Depends(require_auth)])
+def accounts(page: int = 1, page_limit: int = 20, q: str | None = None):
+    """Sección Cuentas: una fila por familia, con código, plan, pagos, hijos y consultas."""
+    page, page_limit, off = _pag(page, page_limit)
+    where, args = ["u.role='guardian'", "u.deleted_at IS NULL"], []
+    if q:
+        where.append("(g.full_name LIKE %s OR g.account_code LIKE %s OR u.phone_number LIKE %s)")
+        args += [f"%{q}%"] * 3
+    w = " AND ".join(where)
+    total = _q(f"SELECT COUNT(*) c FROM guardians g JOIN users u ON u.id=g.user_id WHERE {w}",
+               tuple(args))[0]["c"]
+    rows = _q(
+        f"""SELECT g.id, g.account_code, g.full_name, g.gender, g.country, g.province, g.city,
+                   g.address, u.phone_number, u.email, u.status, u.created_at, ic.name AS insurance,
+                   (SELECT COUNT(*) FROM guardian_dependent gd WHERE gd.guardian_id=g.id) children,
+                   (SELECT COUNT(*) FROM chat_sessions cs WHERE cs.guardian_id=g.id) chats,
+                   (SELECT p.status FROM payments p WHERE p.user_id=u.id
+                      ORDER BY p.created_at DESC LIMIT 1) pay_status,
+                   (SELECT sp.name FROM payments p JOIN subscription_plans sp ON sp.id=p.plan_id
+                      WHERE p.user_id=u.id AND p.status='confirmed'
+                      ORDER BY p.confirmed_at DESC LIMIT 1) plan
+            FROM guardians g JOIN users u ON u.id=g.user_id
+            LEFT JOIN insurance_companies ic ON ic.id=g.insurance_company_id
+            WHERE {w} ORDER BY u.created_at DESC LIMIT %s OFFSET %s""",
+        tuple(args) + (page_limit, off),
+    )
+    items = [{
+        "id": r["id"], "accountCode": r["account_code"], "guardian": r["full_name"],
+        "gender": r["gender"], "phone": r["phone_number"], "email": r["email"],
+        "country": r["country"], "province": r["province"], "city": r["city"], "address": r["address"],
+        "insurance": r["insurance"], "status": r["status"], "plan": r["plan"] or "free",
+        "paymentStatus": r["pay_status"], "children": int(r["children"] or 0),
+        "chats": int(r["chats"] or 0), "createdAt": _clean(r["created_at"]),
+    } for r in rows]
+    return _envelope(items, page, page_limit, total)
+
+
+@app.get("/api/users", dependencies=[Depends(require_auth)])
+def users_internal(page: int = 1, page_limit: int = 20, role: str | None = None):
+    """Usuarios internos: todo lo que NO es acudiente (admin, doctor, ventas, auditor…)."""
+    page, page_limit, off = _pag(page, page_limit)
+    where, args = ["u.role <> 'guardian'", "u.deleted_at IS NULL"], []
+    if role:
+        where.append("u.role = %s")
+        args.append(role)
+    w = " AND ".join(where)
+    total = _q(f"SELECT COUNT(*) c FROM users u WHERE {w}", tuple(args))[0]["c"]
+    rows = _q(
+        f"""SELECT u.id, u.email, u.phone_number, u.role, u.status, u.is_active, u.created_at,
+                   ud.full_name, ud.license_id, ud.medical_specialty
+            FROM users u LEFT JOIN users_doctor ud ON ud.user_id=u.id
+            WHERE {w} ORDER BY u.created_at DESC LIMIT %s OFFSET %s""",
+        tuple(args) + (page_limit, off),
+    )
+    items = [{
+        "id": r["id"], "name": r["full_name"], "email": r["email"], "phone": r["phone_number"],
+        "role": r["role"], "status": r["status"], "isActive": bool(r["is_active"]),
+        "licenseId": r["license_id"], "specialty": r["medical_specialty"],
+        "createdAt": _clean(r["created_at"]),
+    } for r in rows]
+    return _envelope(items, page, page_limit, total)
+
+
+class DoctorNote(BaseModel):
+    note: str
+    reviewed_by: str | None = None
+
+
+@app.patch("/api/chats/{sid}/note", dependencies=[Depends(require_auth)])
+def chat_note(sid: str, body: DoctorNote):
+    """Comentario del médico auditor sobre una sesión (guarda quién y cuándo revisó)."""
+    if not _q("SELECT id FROM chat_sessions WHERE id=%s", (sid,)):
+        raise HTTPException(404, "session not found")
+    _exec("UPDATE chat_sessions SET doctor_note=%s, reviewed_by=%s, reviewed_at=NOW() WHERE id=%s",
+          (body.note, body.reviewed_by, sid))
+    r = _q("SELECT id, doctor_note, reviewed_by, reviewed_at FROM chat_sessions WHERE id=%s", (sid,))[0]
+    return {"id": r["id"], "note": r["doctor_note"], "reviewedBy": r["reviewed_by"],
+            "reviewedAt": _clean(r["reviewed_at"])}
 
 
 # ── Future sections (paginated empty) ────────────────────────────────────────

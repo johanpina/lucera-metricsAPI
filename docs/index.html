@@ -127,7 +127,8 @@
       <div class="grp">Endpoints</div>
       <a href="#guardians">Guardians · CRUD</a><a href="#patients">Patients · CRUD</a><a href="#chats">Chats</a>
       <a href="#payments">Payments · create</a><a href="#centers">Centers · CRUD</a>
-      <a href="#catalogs">Insurances · Specialties · CRUD</a><a href="#usage">Usage / Consumos</a><a href="#stats">Statistics / KPIs</a><a href="#botstatus">Estado del bot</a>
+      <a href="#catalogs">Insurances · Specialties · CRUD</a><a href="#usage">Usage / Consumos</a><a href="#stats">Statistics / KPIs</a>
+      <a href="#backlog">★ Backlog del tablero</a><a href="#botstatus">Estado del bot</a>
       <div class="grp">Integración</div>
       <a href="#react">Conectar el dashboard</a><a href="#future">Endpoints futuros</a>
       <a href="#errores">Errores</a><a href="#interactivo">Docs interactivas</a>
@@ -507,6 +508,150 @@ GET /api/portal-links?only_missing=true
           <tr><td><code>/api/stats/attention-type</code></td><td><code>{ type, value }[]</code></td></tr>
           <tr><td><code>/api/stats/csat</code></td><td><code>{ week, csat }[]</code></td></tr>
         </table></div>
+      </section>
+
+      <section id="backlog">
+        <h2>★ Backlog del tablero · endpoints nuevos</h2>
+        <p class="lede" style="font-size:15px">Todo lo que salió de la revisión de David. Agregaciones
+          cacheadas ~60&nbsp;s, igual que el resto de <code>/api/stats/*</code>.</p>
+
+        <div class="adm warn"><div class="t">⚠️ Vocabulario: derivación ≠ modalidad</div><div class="c">
+          <p>El tablero pide <b>“Urgencias – Citas – Casa”</b>. Eso es <b>derivación clínica</b> y sale de
+            <code>classification</code>. <b>No</b> uses <code>/api/stats/attention-type</code> para eso:
+            ese endpoint es <b>modalidad</b> (virtual vs presencial), otro eje distinto.</p>
+          <table><thead><tr><th>classification (BD)</th><th><code>derivation</code> (API)</th><th>Tablero</th><th>Color</th></tr></thead>
+            <tbody>
+              <tr><td>general</td><td><code>home</code></td><td>Casa</td><td>verde</td></tr>
+              <tr><td>urgente</td><td><code>appointment</code></td><td>Cita</td><td>amarillo</td></tr>
+              <tr><td>emergencia</td><td><code>emergency</code></td><td>Urgencias</td><td>rojo</td></tr>
+            </tbody></table>
+        </div></div>
+
+        <div class="adm"><div class="t">✅ Corregido: chats en verde que debían ser rojos</div><div class="c">
+          <p>La clasificación se sobreescribía en <b>cada turno</b>, así que una sesión derivada a urgencias
+            volvía a <code>general</code> en cuanto el usuario decía “gracias”. Ahora es <b>monotónica</b>:
+            solo escala (general → urgente → emergencia), nunca baja. Además, si el acudiente cambia de hijo
+            a mitad del chat se <b>cierra la sesión y se abre otra</b>, para que <b>1 sesión = 1 paciente =
+            1 desenlace</b> y los conteos por paciente cuadren.</p></div></div>
+
+        <h3>Resumen · North Star</h3>
+        <div class="ep-h"><span class="m get">get</span><span class="path">/api/stats/summary</span></div>
+        <div class="single"><span class="cp" data-copy>Copiar</span><pre><code>{
+  <span class="tk">"accounts"</span>:{ <span class="tk">"total"</span>:<span class="tn">42</span>, <span class="tk">"active"</span>:<span class="tn">38</span>, <span class="tk">"free"</span>:<span class="tn">30</span>, <span class="tk">"premium"</span>:<span class="tn">12</span>, <span class="tk">"conversionRate"</span>:<span class="tn">28.6</span> },
+  <span class="tk">"revenueUsd"</span>:<span class="tn">184.0</span>,
+  <span class="tk">"csat"</span>:null,                <span class="tc">// null = aún no se recoge feedback (falta encuesta post-consulta)</span>
+  <span class="tk">"usage"</span>:{ <span class="tk">"sessions"</span>:<span class="tn">210</span>, <span class="tk">"sessionCompletionRate"</span>:<span class="tn">71.4</span>, <span class="tk">"abandoned"</span>:<span class="tn">60</span> },
+  <span class="tk">"safety"</span>:{ <span class="tk">"redFlagsToEmergency"</span>:<span class="tn">14</span>, <span class="tk">"redFlagRate"</span>:<span class="tn">6.7</span>, <span class="tk">"reportedErRate"</span>:null }
+}</code></pre></div>
+        <table><thead><tr><th>Campo</th><th>Significado</th></tr></thead><tbody>
+          <tr><td><code>csat</code></td><td><b>null</b> mientras el bot no capture <code>feedback_score</code>. Pinta el widget en estado vacío, no en 0.</td></tr>
+          <tr><td><code>reportedErRate</code></td><td><b>null</b>: requiere preguntar en el follow-up si el acudiente acudió a urgencias. Pendiente de definición.</td></tr>
+          <tr><td><code>sessionCompletionRate</code></td><td>% de sesiones terminadas en <code>resolved</code> o <code>closed_user</code>.</td></tr>
+        </tbody></table>
+
+        <h3>Cuentas · Niños · Chats · Desempeño</h3>
+        <div class="ep-h"><span class="m get">get</span><span class="path">/api/stats/accounts</span>
+          <span class="ret">→ <code>{ byMonth, byPlan, byInsurance, byCountry, byGender }</code></span></div>
+        <div class="ep-h"><span class="m get">get</span><span class="path">/api/stats/children</span>
+          <span class="ret">→ <code>{ total, perAccountAvg, byMonth, byAge }</code></span></div>
+        <div class="ep-h"><span class="m get">get</span><span class="path">/api/stats/chats</span>
+          <span class="ret">→ <code>{ total, byState, byMonth, byDerivation, derivationCurves, … }</code></span></div>
+        <div class="single"><span class="cp" data-copy>Copiar</span><pre><code><span class="tc">// /api/stats/chats — byState alimenta "cerradas/abiertas/abandonadas/total"</span>
+{
+  <span class="tk">"total"</span>:<span class="tn">210</span>,
+  <span class="tk">"byState"</span>:{ <span class="tk">"open"</span>:<span class="tn">12</span>, <span class="tk">"closed"</span>:<span class="tn">138</span>, <span class="tk">"abandoned"</span>:<span class="tn">60</span>, <span class="tk">"total"</span>:<span class="tn">210</span> },
+  <span class="tk">"byMonth"</span>:[ { <span class="tk">"month"</span>:<span class="ts">"2026-07"</span>, <span class="tk">"value"</span>:<span class="tn">92</span> } ],
+  <span class="tc">// gráfico de % y No. de derivaciones</span>
+  <span class="tk">"byDerivation"</span>:[ { <span class="tk">"type"</span>:<span class="ts">"home"</span>, <span class="tk">"value"</span>:<span class="tn">150</span>, <span class="tk">"percent"</span>:<span class="tn">71.4</span> },
+                    { <span class="tk">"type"</span>:<span class="ts">"appointment"</span>, <span class="tk">"value"</span>:<span class="tn">46</span>, <span class="tk">"percent"</span>:<span class="tn">21.9</span> },
+                    { <span class="tk">"type"</span>:<span class="ts">"emergency"</span>, <span class="tk">"value"</span>:<span class="tn">14</span>, <span class="tk">"percent"</span>:<span class="tn">6.7</span> } ],
+  <span class="tc">// las 3 CURVAS por mes, ya listas para un line chart</span>
+  <span class="tk">"derivationCurves"</span>:[ { <span class="tk">"month"</span>:<span class="ts">"2026-07"</span>, <span class="tk">"home"</span>:<span class="tn">60</span>, <span class="tk">"appointment"</span>:<span class="tn">22</span>, <span class="tk">"emergency"</span>:<span class="tn">10</span> } ],
+  <span class="tk">"perAccountAvg"</span>:<span class="tn">5.0</span>, <span class="tk">"emergenciesPerAccountAvg"</span>:<span class="tn">0.33</span>
+}</code></pre></div>
+        <div class="ep-h"><span class="m get">get</span><span class="path">/api/stats/performance</span></div>
+        <div class="single"><span class="cp" data-copy>Copiar</span><pre><code>{
+  <span class="tk">"timeToFirstConsultMin"</span>:<span class="tn">42.5</span>,   <span class="tc">// registro → primera consulta</span>
+  <span class="tk">"timeToResolutionMin"</span>:<span class="tn">18.2</span>,
+  <span class="tk">"activeAccountRate"</span>:<span class="tn">64.3</span>,     <span class="tc">// cuentas con ≥1 consulta en 30 días</span>
+  <span class="tk">"churnRate"</span>:<span class="tn">21.4</span>,             <span class="tc">// APROXIMACIÓN: sin consultas en 60 días (ver "note")</span>
+  <span class="tk">"freeLimitNoConversion"</span>:<span class="tn">18</span>,
+  <span class="tk">"techFailureSessions"</span>:<span class="tn">3</span>, <span class="tk">"techFailureRate"</span>:<span class="tn">1.43</span>,
+  <span class="tk">"onboardingCompletionRate"</span>:null,  <span class="tc">// falta definir qué cuenta como "completo"</span>
+  <span class="tk">"note"</span>:<span class="ts">"churnRate = cuentas sin consultas en 60 días…"</span>
+}</code></pre></div>
+
+        <h3>Seguros médicos · con filtros</h3>
+        <div class="ep-h"><span class="m get">get</span><span class="path">/api/stats/insurance</span>
+          <span class="ret">· <code>?insurance_id=&amp;date_from=YYYY-MM-DD&amp;date_to=YYYY-MM-DD</code></span></div>
+        <div class="single"><span class="cp" data-copy>Copiar</span><pre><code><span class="tc">// items = barras segmentadas por aseguradora (casa/cita/urgencias)</span>
+{
+  <span class="tk">"items"</span>:[ { <span class="tk">"insurance"</span>:<span class="ts">"ASSA"</span>, <span class="tk">"home"</span>:<span class="tn">40</span>, <span class="tk">"appointment"</span>:<span class="tn">12</span>, <span class="tk">"emergency"</span>:<span class="tn">4</span>, <span class="tk">"total"</span>:<span class="tn">56</span> } ],
+  <span class="tk">"totals"</span>:{ <span class="tk">"consultations"</span>:<span class="tn">56</span>, <span class="tk">"emergencies"</span>:<span class="tn">4</span> },
+  <span class="tk">"filters"</span>:{ <span class="tk">"insuranceId"</span>:null, <span class="tk">"dateFrom"</span>:null, <span class="tk">"dateTo"</span>:null }
+}</code></pre></div>
+        <p style="font-size:14px;color:var(--muted)">El seguro se toma del <b>acudiente</b> y, si no tiene,
+          del paciente (<code>COALESCE</code>).</p>
+
+        <h3>Sección Cuentas</h3>
+        <div class="ep-h"><span class="m get">get</span><span class="path">/api/accounts</span>
+          <span class="ret">· <code>?page=&amp;page_limit=&amp;q=</code> · envelope paginado</span></div>
+        <div class="single"><span class="cp" data-copy>Copiar</span><pre><code>{ <span class="tk">"items"</span>:[ {
+  <span class="tk">"id"</span>:<span class="ts">"…"</span>, <span class="tk">"accountCode"</span>:<span class="ts">"LUC-000042"</span>,   <span class="tc">// ID legible, se asigna al registrarse</span>
+  <span class="tk">"guardian"</span>:<span class="ts">"Ana Muschett"</span>, <span class="tk">"gender"</span>:<span class="ts">"femenino"</span>, <span class="tk">"phone"</span>:<span class="ts">"507…"</span>, <span class="tk">"email"</span>:<span class="ts">"…"</span>,
+  <span class="tk">"country"</span>:<span class="ts">"Panamá"</span>, <span class="tk">"province"</span>:<span class="ts">"Panamá Oeste"</span>, <span class="tk">"city"</span>:<span class="ts">"Arraiján"</span>, <span class="tk">"address"</span>:<span class="ts">"…"</span>,
+  <span class="tk">"insurance"</span>:<span class="ts">"ASSA"</span>, <span class="tk">"status"</span>:<span class="ts">"active"</span>, <span class="tk">"plan"</span>:<span class="ts">"1_hijo"</span>, <span class="tk">"paymentStatus"</span>:<span class="ts">"confirmed"</span>,
+  <span class="tk">"children"</span>:<span class="tn">2</span>, <span class="tk">"chats"</span>:<span class="tn">17</span>, <span class="tk">"createdAt"</span>:<span class="ts">"2026-07-14T…"</span>
+} ], <span class="tk">"page"</span>:<span class="tn">1</span>, <span class="tk">"total"</span>:<span class="tn">42</span> }</code></pre></div>
+        <p style="font-size:14px;color:var(--muted)"><code>q</code> busca por nombre, código de cuenta o teléfono.
+          <b>Ojo:</b> <code>accountCode</code> identifica la <b>cuenta/familia</b>;
+          la <b>cédula del paciente</b> es <code>idNumber</code> en <code>/api/patients</code> — son cosas distintas.</p>
+
+        <h3>Usuarios internos (todo lo que no es acudiente)</h3>
+        <div class="ep-h"><span class="m get">get</span><span class="path">/api/users</span>
+          <span class="ret">· <code>?role=doctor|admin|super_admin|marketing|auditor_medico|…</code></span></div>
+        <div class="single"><span class="cp" data-copy>Copiar</span><pre><code>{ <span class="tk">"items"</span>:[ { <span class="tk">"id"</span>:<span class="ts">"…"</span>, <span class="tk">"name"</span>:<span class="ts">"Dra. Ana"</span>, <span class="tk">"email"</span>:<span class="ts">"…"</span>, <span class="tk">"role"</span>:<span class="ts">"doctor"</span>,
+    <span class="tk">"status"</span>:<span class="ts">"active"</span>, <span class="tk">"isActive"</span>:true, <span class="tk">"licenseId"</span>:<span class="ts">"…"</span>, <span class="tk">"specialty"</span>:<span class="ts">"Pediatría"</span> } ] }</code></pre></div>
+        <p style="font-size:14px;color:var(--muted)">Roles: <code>doctor · super_admin · admin · auditor_medico ·
+          marketing · gerente_cuenta · oficial_privacidad · soporte_tecnico</code>.</p>
+
+        <h3>Chats · filtros nuevos y comentario del médico</h3>
+        <div class="ep-h"><span class="m get">get</span><span class="path">/api/chats</span>
+          <span class="ret">· <code>?derivation=&amp;insurance_id=&amp;date_from=&amp;date_to=&amp;guardian_id=</code></span></div>
+        <table><thead><tr><th>Filtro</th><th>Valores</th></tr></thead><tbody>
+          <tr><td><code>derivation</code></td><td><code>home</code> · <code>appointment</code> · <code>emergency</code> (422 si es otro)</td></tr>
+          <tr><td><code>insurance_id</code></td><td>id de aseguradora (acudiente, o paciente si el acudiente no tiene)</td></tr>
+          <tr><td><code>date_from</code> / <code>date_to</code></td><td><code>YYYY-MM-DD</code>, inclusivos</td></tr>
+          <tr><td><code>guardian_id</code></td><td>para “ver todos los chats de esta cuenta”</td></tr>
+        </tbody></table>
+        <p style="font-size:14px">Cada chat ahora trae además: <code>guardianId</code>, <code>patientId</code>,
+          <code>accountCode</code>, <code>insurance</code>, <code>derivation</code>, <code>doctorNote</code>,
+          <code>reviewedBy</code>, <code>reviewedAt</code> y <code>techFailure</code> — con eso armas el menú de
+          “ir a la cuenta / ir al historial” sin pedir nada más.</p>
+        <div class="ep-h"><span class="m post">patch</span><span class="path">/api/chats/{id}/note</span>
+          <span class="ret">→ comentario del médico auditor</span></div>
+        <div class="single"><span class="cp" data-copy>Copiar</span><pre><code><span class="tc">// request</span>  { <span class="tk">"note"</span>:<span class="ts">"Revisado. Se recomienda contactar al padre."</span>, <span class="tk">"reviewed_by"</span>:<span class="ts">"&lt;user_id&gt;"</span> }
+<span class="tc">// response</span> { <span class="tk">"id"</span>:<span class="ts">"…"</span>, <span class="tk">"note"</span>:<span class="ts">"…"</span>, <span class="tk">"reviewedBy"</span>:<span class="ts">"…"</span>, <span class="tk">"reviewedAt"</span>:<span class="ts">"2026-07-30T…"</span> }</code></pre></div>
+
+        <h3>Catálogo geográfico</h3>
+        <div class="ep-h"><span class="m get">get</span><span class="path">/api/geo</span>
+          <span class="ret">→ país → provincias/departamentos</span></div>
+        <div class="single"><span class="cp" data-copy>Copiar</span><pre><code>[ { <span class="tk">"code"</span>:<span class="ts">"PA"</span>, <span class="tk">"name"</span>:<span class="ts">"Panamá"</span>, <span class="tk">"phoneCode"</span>:<span class="ts">"+507"</span>,
+    <span class="tk">"states"</span>:[<span class="ts">"Bocas del Toro"</span>,<span class="ts">"Chiriquí"</span>,<span class="ts">"Coclé"</span>, …] } ]</code></pre></div>
+        <p style="font-size:14px;color:var(--muted)">Panamá (10 provincias + 3 comarcas), Colombia (33) y
+          Argentina (24). Seed propio en BD — sin API externa, sin latencia extra.</p>
+
+        <h3>Campos nuevos en endpoints existentes</h3>
+        <table><thead><tr><th>Endpoint</th><th>Campos añadidos</th></tr></thead><tbody>
+          <tr><td><code>/api/guardians</code></td><td><code>accountCode</code>, <code>gender</code>, <code>address</code>, <code>province</code>, <code>chats</code></td></tr>
+          <tr><td><code>/api/patients</code></td><td><code>idNumber</code> (cédula), <code>school</code>, <code>accountCode</code>, <code>address</code>, <code>chats</code></td></tr>
+          <tr><td><code>/api/chats</code></td><td>ver arriba</td></tr>
+        </tbody></table>
+        <p style="font-size:14px;color:var(--muted)">Ambos <code>PATCH</code> aceptan los campos nuevos:
+          <code>/api/guardians/{id}</code> → <code>gender</code>, <code>address</code>;
+          <code>/api/patients/{id}</code> → <code>idNumber</code>, <code>school</code>.
+          <b>Nota:</b> <code>nationalId</code> sigue siendo el número de <b>CSS</b> (seguridad social);
+          la cédula es el campo nuevo <code>idNumber</code>.</p>
       </section>
 
       <section id="botstatus">
