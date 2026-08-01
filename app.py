@@ -137,29 +137,36 @@ PORTAL_REGISTER_URL = os.environ.get("PORTAL_REGISTER_URL", "")  # URL del form 
 REGISTER_TTL = int(os.environ.get("REGISTER_TTL_HOURS", "72")) * 3600
 
 
-def _load_users() -> dict:
-    raw = os.environ.get("METRICS_USERS", "").strip()
-    if raw:
-        try:
-            return {u["email"].lower(): u for u in json.loads(raw)}
-        except Exception:  # noqa: BLE001
-            pass
-    pwd = os.environ.get("METRICS_DEMO_PASSWORD", "Lucera2026!")
-    demo = [
-        {"email": "admin@lucera.pa", "name": "Admin Técnico", "role": "Admin", "password": pwd},
-        {"email": "ventas@lucera.pa", "name": "Ventas", "role": "Sales", "password": pwd},
-        {"email": "esanchez@lucera.pa", "name": "Dra. Elena Sánchez", "role": "Doctor", "password": pwd},
-    ]
-    return {u["email"].lower(): u for u in demo}
+# ── Usuarios del tablero: la BASE DE DATOS es la única fuente de verdad ───────
+#
+# Antes vivían en la variable de entorno METRICS_USERS. Ahora están en `users`, con
+# `dashboard_access = 1`. Ese flag es explícito a propósito: hay acudientes con correo y
+# contraseña de portal, y tener credenciales NO debe dar acceso al panel interno.
+#
+# Rol real (BD) → rol que consume el tablero. Se envían los dos: `role` mantiene el
+# contrato que ya usa el front, `dbRole` permite permisos más finos más adelante.
+ROLE_TO_DASHBOARD = {
+    "super_admin": "Admin",
+    "admin": "Admin",
+    "soporte_tecnico": "Admin",
+    "oficial_privacidad": "Admin",
+    "doctor": "Doctor",
+    "auditor_medico": "Doctor",
+    "marketing": "Sales",
+    "gerente_cuenta": "Sales",
+    "guardian": "Guardian",
+}
 
 
-USERS = _load_users()
-
-
-def _check_password(user: dict, password: str) -> bool:
-    if "pass_sha256" in user:
-        return hmac.compare_digest(hashlib.sha256(password.encode()).hexdigest(), str(user["pass_sha256"]))
-    return hmac.compare_digest(str(user.get("password", "")), password)
+def _dashboard_user(email: str) -> dict | None:
+    """Busca un operador del tablero por correo. Devuelve None si no puede entrar."""
+    rows = _q(
+        """SELECT id, email, full_name, role, status, password_hash
+           FROM users
+           WHERE email=%s AND deleted_at IS NULL AND status='active' AND dashboard_access=1""",
+        (email,),
+    )
+    return rows[0] if rows else None
 
 
 def _make_token(sub: str, name: str, role: str, typ: str, ttl: int, **extra) -> str:
@@ -180,8 +187,18 @@ def _hash_password(password: str) -> str:
 
 
 def _verify_password(password: str, stored: str) -> bool:
+    """Verifica contra los dos formatos que conviven en `users.password_hash`.
+
+    - `pbkdf2_sha256$iter$salt$hash` → el que se usa al fijar contraseñas nuevas.
+    - `sha256$hash`                  → heredado de METRICS_USERS. Se conservó tal cual al
+      migrar para no obligar a nadie a cambiar de contraseña; se reemplaza solo cuando el
+      usuario la cambia (ahí pasa a PBKDF2).
+    """
+    stored = stored or ""
+    if stored.startswith("sha256$"):
+        return hmac.compare_digest(hashlib.sha256(password.encode()).hexdigest(), stored[7:])
     try:
-        algo, iters, salt_hex, hash_hex = (stored or "").split("$")
+        algo, iters, salt_hex, hash_hex = stored.split("$")
         if algo != "pbkdf2_sha256":
             return False
         dk = hashlib.pbkdf2_hmac("sha256", password.encode(), bytes.fromhex(salt_hex), int(iters))
@@ -275,16 +292,21 @@ app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_methods=["*"], all
 
 @app.post("/auth/login")
 def login(body: LoginIn) -> dict:
-    u = USERS.get((body.email or "").lower().strip())
-    if u is None or not _check_password(u, body.password or ""):
+    """Login del tablero. Autentica contra la tabla `users` (no contra variables de entorno)."""
+    sub = (body.email or "").lower().strip()
+    u = _dashboard_user(sub)
+    if u is None or not _verify_password(body.password or "", u["password_hash"]):
+        # Mismo mensaje si el correo no existe, si está inactivo o si no tiene acceso al
+        # tablero: no revelamos cuál de las tres es.
         raise HTTPException(status_code=401, detail="Wrong email or password.")
-    sub = body.email.lower().strip()
+    name = u["full_name"] or sub.split("@")[0]
+    role = ROLE_TO_DASHBOARD.get(u["role"], "Guardian")
     return {
-        "access_token": _make_token(sub, u["name"], u["role"], "access", ACCESS_TTL),
-        "refresh_token": _make_token(sub, u["name"], u["role"], "refresh", REFRESH_TTL),
+        "access_token": _make_token(sub, name, role, "access", ACCESS_TTL, uid=u["id"], dbRole=u["role"]),
+        "refresh_token": _make_token(sub, name, role, "refresh", REFRESH_TTL, uid=u["id"], dbRole=u["role"]),
         "token_type": "Bearer",
         "expires_in": ACCESS_TTL,
-        "user": {"email": sub, "name": u["name"], "role": u["role"]},
+        "user": {"id": u["id"], "email": sub, "name": name, "role": role, "dbRole": u["role"]},
     }
 
 
@@ -1779,29 +1801,180 @@ def accounts(page: int = 1, page_limit: int = 20, q: str | None = None):
 
 
 @app.get("/api/users", dependencies=[Depends(require_auth)])
-def users_internal(page: int = 1, page_limit: int = 20, role: str | None = None):
-    """Usuarios internos: todo lo que NO es acudiente (admin, doctor, ventas, auditor…)."""
+def users_internal(page: int = 1, page_limit: int = 20, role: str | None = None,
+                   dashboard_only: bool = False, q: str | None = None):
+    """Usuarios internos: todo lo que NO es acudiente (admin, doctor, ventas, auditor…).
+
+    `dashboard_only=true` incluye además a los acudientes con acceso al tablero
+    (hoy Ana y David), que es la lista real de "quién puede entrar".
+    """
     page, page_limit, off = _pag(page, page_limit)
-    where, args = ["u.role <> 'guardian'", "u.deleted_at IS NULL"], []
+    where, args = ["u.deleted_at IS NULL"], []
+    where.append("u.dashboard_access=1" if dashboard_only else "u.role <> 'guardian'")
     if role:
         where.append("u.role = %s")
         args.append(role)
+    if q:
+        where.append("(u.email LIKE %s OR u.full_name LIKE %s)")
+        args += [f"%{q}%"] * 2
     w = " AND ".join(where)
     total = _q(f"SELECT COUNT(*) c FROM users u WHERE {w}", tuple(args))[0]["c"]
     rows = _q(
-        f"""SELECT u.id, u.email, u.phone_number, u.role, u.status, u.is_active, u.created_at,
-                   ud.full_name, ud.license_id, ud.medical_specialty
+        f"""SELECT u.id, u.email, u.phone_number, u.full_name, u.role, u.status, u.is_active,
+                   u.dashboard_access, u.password_hash, u.created_at,
+                   ud.license_id, ud.medical_specialty
             FROM users u LEFT JOIN users_doctor ud ON ud.user_id=u.id
             WHERE {w} ORDER BY u.created_at DESC LIMIT %s OFFSET %s""",
         tuple(args) + (page_limit, off),
     )
-    items = [{
-        "id": r["id"], "name": r["full_name"], "email": r["email"], "phone": r["phone_number"],
-        "role": r["role"], "status": r["status"], "isActive": bool(r["is_active"]),
-        "licenseId": r["license_id"], "specialty": r["medical_specialty"],
-        "createdAt": _clean(r["created_at"]),
-    } for r in rows]
-    return _envelope(items, page, page_limit, total)
+    return _envelope([_user_row(r) for r in rows], page, page_limit, total)
+
+
+_INTERNAL_ROLES = ("super_admin", "admin", "doctor", "auditor_medico", "marketing",
+                   "gerente_cuenta", "oficial_privacidad", "soporte_tecnico")
+
+
+def _user_row(r: dict) -> dict:
+    return {
+        "id": r["id"], "name": r.get("full_name"), "email": r["email"],
+        "phone": r.get("phone_number"), "role": r["role"],
+        "dashboardRole": ROLE_TO_DASHBOARD.get(r["role"], "Guardian"),
+        "status": r["status"], "isActive": bool(r.get("is_active")),
+        "dashboardAccess": bool(r.get("dashboard_access")),
+        "hasPassword": bool(r.get("password_hash")),
+        "licenseId": r.get("license_id"), "specialty": r.get("medical_specialty"),
+        "createdAt": _clean(r.get("created_at")),
+    }
+
+
+def _one_user(uid: str) -> dict:
+    rows = _q(
+        """SELECT u.*, ud.full_name AS doc_name, ud.license_id, ud.medical_specialty
+           FROM users u LEFT JOIN users_doctor ud ON ud.user_id=u.id
+           WHERE u.id=%s AND u.deleted_at IS NULL""",
+        (uid,),
+    )
+    if not rows:
+        raise HTTPException(404, "user not found")
+    return _user_row(rows[0])
+
+
+class UserCreate(BaseModel):
+    name: str
+    email: str
+    role: str                       # ver _INTERNAL_ROLES
+    password: str | None = None     # si no se manda, queda sin clave (no puede entrar)
+    dashboardAccess: bool = True
+    licenseId: str | None = None    # solo para doctores
+    specialty: str | None = None
+
+
+class UserUpdate(BaseModel):
+    name: str | None = None
+    email: str | None = None
+    role: str | None = None
+    status: str | None = None       # active | suspended | inactive
+    dashboardAccess: bool | None = None
+    licenseId: str | None = None
+    specialty: str | None = None
+
+
+class UserPassword(BaseModel):
+    password: str
+
+
+@app.post("/api/users", dependencies=[Depends(require_auth)], status_code=201)
+def user_create(body: UserCreate):
+    """Crea un usuario interno (no acudiente) del tablero."""
+    if body.role not in _INTERNAL_ROLES:
+        raise HTTPException(422, f"role must be one of: {', '.join(_INTERNAL_ROLES)}")
+    email = body.email.lower().strip()
+    if _q("SELECT id FROM users WHERE email=%s AND deleted_at IS NULL", (email,)):
+        raise HTTPException(409, "email already exists")
+    uid = str(uuid.uuid4())
+    _exec(
+        """INSERT INTO users (id, email, phone_number, password_hash, full_name, role,
+                              status, is_active, dashboard_access, free_sessions_used,
+                              created_at, updated_at)
+           VALUES (%s,%s,%s,%s,%s,%s,'active',1,%s,0,NOW(),NOW())""",
+        (uid, email, f"dash-{uid[:12]}", _hash_password(body.password) if body.password else "",
+         body.name.strip(), body.role, 1 if body.dashboardAccess else 0),
+    )
+    if body.role == "doctor":
+        _exec(
+            "INSERT INTO users_doctor (user_id, full_name, license_id, medical_specialty, created_at) "
+            "VALUES (%s,%s,%s,%s,NOW())",
+            (uid, body.name.strip(), body.licenseId or "", body.specialty),
+        )
+    return _one_user(uid)
+
+
+@app.get("/api/users/{uid}", dependencies=[Depends(require_auth)])
+def user_get(uid: str):
+    return _one_user(uid)
+
+
+@app.patch("/api/users/{uid}", dependencies=[Depends(require_auth)])
+def user_update(uid: str, body: UserUpdate):
+    if not _q("SELECT id FROM users WHERE id=%s AND deleted_at IS NULL", (uid,)):
+        raise HTTPException(404, "user not found")
+    sets, args = [], []
+    if body.name is not None:
+        sets.append("full_name=%s"); args.append(body.name.strip())
+    if body.email is not None:
+        email = body.email.lower().strip()
+        if _q("SELECT id FROM users WHERE email=%s AND id<>%s AND deleted_at IS NULL", (email, uid)):
+            raise HTTPException(409, "email already exists")
+        sets.append("email=%s"); args.append(email)
+    if body.role is not None:
+        if body.role not in _INTERNAL_ROLES:
+            raise HTTPException(422, f"role must be one of: {', '.join(_INTERNAL_ROLES)}")
+        sets.append("role=%s"); args.append(body.role)
+    if body.status is not None:
+        if body.status not in ("active", "suspended", "inactive"):
+            raise HTTPException(422, "status must be: active|suspended|inactive")
+        sets.append("status=%s"); args.append(body.status)
+        sets.append("is_active=%s"); args.append(1 if body.status == "active" else 0)
+    if body.dashboardAccess is not None:
+        sets.append("dashboard_access=%s"); args.append(1 if body.dashboardAccess else 0)
+    if sets:
+        _exec(f"UPDATE users SET {', '.join(sets)}, updated_at=NOW() WHERE id=%s", tuple(args + [uid]))
+    if body.licenseId is not None or body.specialty is not None or body.name is not None:
+        if _q("SELECT user_id FROM users_doctor WHERE user_id=%s", (uid,)):
+            ds, da = [], []
+            if body.name is not None:
+                ds.append("full_name=%s"); da.append(body.name.strip())
+            if body.licenseId is not None:
+                ds.append("license_id=%s"); da.append(body.licenseId)
+            if body.specialty is not None:
+                ds.append("medical_specialty=%s"); da.append(body.specialty)
+            if ds:
+                _exec(f"UPDATE users_doctor SET {', '.join(ds)} WHERE user_id=%s", tuple(da + [uid]))
+    return _one_user(uid)
+
+
+@app.post("/api/users/{uid}/password", dependencies=[Depends(require_auth)])
+def user_set_password(uid: str, body: UserPassword):
+    """Fija la contraseña del usuario. Siempre la guarda con PBKDF2, así que además
+    reemplaza los hashes SHA-256 heredados de METRICS_USERS."""
+    if not _q("SELECT id FROM users WHERE id=%s AND deleted_at IS NULL", (uid,)):
+        raise HTTPException(404, "user not found")
+    if len(body.password or "") < 8:
+        raise HTTPException(422, "password must be at least 8 characters")
+    _exec("UPDATE users SET password_hash=%s, updated_at=NOW() WHERE id=%s",
+          (_hash_password(body.password), uid))
+    return {"ok": True, "id": uid}
+
+
+@app.delete("/api/users/{uid}", dependencies=[Depends(require_auth)])
+def user_delete(uid: str):
+    """Borrado suave: desactiva y le quita el acceso al tablero. Conserva la trazabilidad
+    (p. ej. las sesiones que ese médico auditó siguen apuntando a él)."""
+    if not _q("SELECT id FROM users WHERE id=%s AND deleted_at IS NULL", (uid,)):
+        raise HTTPException(404, "user not found")
+    _exec("UPDATE users SET deleted_at=NOW(), is_active=0, status='inactive', "
+          "dashboard_access=0, updated_at=NOW() WHERE id=%s", (uid,))
+    return {"deleted": True, "id": uid}
 
 
 class DoctorNote(BaseModel):

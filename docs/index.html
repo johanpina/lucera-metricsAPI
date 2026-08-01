@@ -193,18 +193,26 @@ guardians = requests.get(f<span class="ts">"{base}/api/guardians"</span>, header
         <div class="single"><span class="cp" data-copy>Copiar</span><pre><code><span class="tc">// request</span>  { <span class="tk">"refresh_token"</span>:<span class="ts">"eyJhbGci…"</span> }
 <span class="tc">// response</span> { <span class="tk">"access_token"</span>:<span class="ts">"eyJhbGci…"</span>, <span class="tk">"token_type"</span>:<span class="ts">"Bearer"</span>, <span class="tk">"expires_in"</span>:<span class="tn">7200</span> }
 <span class="tc">// si el refresh caducó (30 días) → 401 → vuelve a hacer login</span></code></pre></div>
-        <h3>Cuentas demo (operadores del tablero)</h3>
-        <p>Los operadores del tablero <b>no están en la base de datos</b>: viven en la
-          configuración del servicio (variable de entorno <code>METRICS_USERS</code> en JSON, o
-          las cuentas demo por defecto). Contraseña demo <code>Lucera2026!</code>:</p>
+        <h3>Operadores del tablero</h3>
+        <p>Los operadores <b>están en la base de datos</b> (tabla <code>users</code>) y el login
+          autentica contra ella. La variable <code>METRICS_USERS</code> quedó obsoleta.</p>
         <div class="tw"><table>
-          <tr><th>Email</th><th>role</th></tr>
-          <tr><td><code>admin@lucera.pa</code></td><td>Admin</td></tr>
-          <tr><td><code>ventas@lucera.pa</code></td><td>Sales</td></tr>
-          <tr><td><code>esanchez@lucera.pa</code></td><td>Doctor</td></tr>
+          <tr><th>Email</th><th>rol en la base</th><th><code>role</code> del token</th></tr>
+          <tr><td><code>admin@lucera.pa</code></td><td><code>admin</code></td><td>Admin</td></tr>
+          <tr><td><code>ventas@lucera.pa</code></td><td><code>marketing</code></td><td>Sales</td></tr>
+          <tr><td><code>esanchez@lucera.pa</code></td><td><code>doctor</code></td><td>Doctor</td></tr>
+          <tr><td><code>ana.muschett@test.lucera</code></td><td><code>guardian</code></td><td>Guardian</td></tr>
+          <tr><td><code>david.muschett@test.lucera</code></td><td><code>guardian</code></td><td>Guardian</td></tr>
         </table></div>
-        <p>Para cuentas reales: setea <code>METRICS_USERS</code> = <code>[{"email","name","role","pass_sha256"}]</code>
-          (o <code>password</code> en texto plano). Cuando está definida, reemplaza a las demo.</p>
+        <p>Las contraseñas <b>no cambiaron</b> con la migración. Para altas, bajas, cambios de rol
+          y de contraseña usa el <a href="#backlog">CRUD de <code>/api/users</code></a> — ya no hay que
+          tocar variables de entorno ni redesplegar.</p>
+        <div class="adm warn"><div class="t">⚠️ Solo entra quien tiene <code>dashboardAccess</code></div><div class="c">
+          <p>Un correo con contraseña <b>no basta</b>: hay 22 acudientes con credenciales de portal y
+            ninguno debe ver el panel interno. El acceso se concede explícitamente. Si el usuario está
+            <code>suspended</code>, inactivo o sin acceso, el login responde
+            <span class="badge b-warn">401</span> con el mismo mensaje que si la contraseña fuera
+            incorrecta: no revelamos cuál de los casos es.</p></div></div>
       </section>
 
       <section id="portal">
@@ -678,13 +686,63 @@ GET /api/chats?guardian_id=3015d1d6-…</code></pre></div>
           <b>Ojo:</b> <code>accountCode</code> identifica la <b>cuenta/familia</b>;
           la <b>cédula del paciente</b> es <code>idNumber</code> en <code>/api/patients</code> — son cosas distintas.</p>
 
-        <h3>Usuarios internos (todo lo que no es acudiente)</h3>
+        <h3>Usuarios del tablero · CRUD completo</h3>
+        <div class="adm"><div class="t">✅ Los usuarios ya viven en la base de datos</div><div class="c">
+          <p>Antes los operadores del tablero estaban en la variable de entorno
+            <code>METRICS_USERS</code>. Ahora están en la tabla <code>users</code> y
+            <code>/auth/login</code> autentica contra la base. <b>Nadie tuvo que cambiar su
+            contraseña</b>: los hashes heredados se conservaron y se reemplazan solos por PBKDF2
+            la primera vez que alguien cambia la clave.</p>
+          <p>El acceso lo controla <code>dashboardAccess</code>, que es <b>explícito</b>: hay 22
+            acudientes con correo y contraseña de portal, y tener credenciales <b>no</b> da acceso al
+            panel. Se concede uno por uno (hoy lo tienen Ana y David, con rol Guardian).</p></div></div>
+
         <div class="ep-h"><span class="m get">get</span><span class="path">/api/users</span>
-          <span class="ret">· <code>?role=doctor|admin|super_admin|marketing|auditor_medico|…</code></span></div>
-        <div class="single"><span class="cp" data-copy>Copiar</span><pre><code>{ <span class="tk">"items"</span>:[ { <span class="tk">"id"</span>:<span class="ts">"…"</span>, <span class="tk">"name"</span>:<span class="ts">"Dra. Ana"</span>, <span class="tk">"email"</span>:<span class="ts">"…"</span>, <span class="tk">"role"</span>:<span class="ts">"doctor"</span>,
-    <span class="tk">"status"</span>:<span class="ts">"active"</span>, <span class="tk">"isActive"</span>:true, <span class="tk">"licenseId"</span>:<span class="ts">"…"</span>, <span class="tk">"specialty"</span>:<span class="ts">"Pediatría"</span> } ] }</code></pre></div>
-        <p style="font-size:14px;color:var(--muted)">Roles: <code>doctor · super_admin · admin · auditor_medico ·
-          marketing · gerente_cuenta · oficial_privacidad · soporte_tecnico</code>.</p>
+          <span class="ret">· <code>?role= ?q= ?dashboard_only=true</code></span></div>
+        <div class="single"><span class="cp" data-copy>Copiar</span><pre><code>{ <span class="tk">"items"</span>:[ {
+  <span class="tk">"id"</span>:<span class="ts">"…"</span>, <span class="tk">"name"</span>:<span class="ts">"Dra. Elena Sánchez"</span>, <span class="tk">"email"</span>:<span class="ts">"esanchez@lucera.pa"</span>,
+  <span class="tk">"role"</span>:<span class="ts">"doctor"</span>,              <span class="tc">// rol real en la base</span>
+  <span class="tk">"dashboardRole"</span>:<span class="ts">"Doctor"</span>,     <span class="tc">// Admin|Doctor|Sales|Guardian — el que usa el front</span>
+  <span class="tk">"status"</span>:<span class="ts">"active"</span>, <span class="tk">"isActive"</span>:true,
+  <span class="tk">"dashboardAccess"</span>:true,     <span class="tc">// ¿puede entrar al tablero?</span>
+  <span class="tk">"hasPassword"</span>:true,         <span class="tc">// false = creado sin clave, aún no puede entrar</span>
+  <span class="tk">"licenseId"</span>:<span class="ts">"…"</span>, <span class="tk">"specialty"</span>:<span class="ts">"Pediatría"</span>, <span class="tk">"createdAt"</span>:<span class="ts">"…"</span>
+} ] }</code></pre></div>
+        <p style="font-size:14px"><code>?dashboard_only=true</code> devuelve <b>quién puede entrar</b>
+          (incluye acudientes con acceso). Sin ese parámetro devuelve solo usuarios internos.</p>
+
+        <div class="ep-h"><span class="m post">post</span><span class="path">/api/users</span><span class="ret">→ <span class="badge">201</span></span></div>
+        <div class="ep-h" style="margin-top:.7em"><span class="m get">get</span><span class="path">/api/users/{id}</span></div>
+        <div class="ep-h" style="margin-top:.7em"><span class="m post" style="background:#d9822b">patch</span><span class="path">/api/users/{id}</span></div>
+        <div class="ep-h" style="margin-top:.7em"><span class="m post">post</span><span class="path">/api/users/{id}/password</span></div>
+        <div class="ep-h" style="margin-top:.7em"><span class="m post" style="background:#b23b4a">del</span><span class="path">/api/users/{id}</span></div>
+        <div class="single"><span class="cp" data-copy>Copiar</span><pre><code><span class="tc">// POST — name, email y role obligatorios. Sin password queda creado pero sin poder entrar.</span>
+{ <span class="tk">"name"</span>:<span class="ts">"Dra. Elena Sánchez"</span>, <span class="tk">"email"</span>:<span class="ts">"esanchez@lucera.pa"</span>, <span class="tk">"role"</span>:<span class="ts">"doctor"</span>,
+  <span class="tk">"password"</span>:<span class="ts">"ClaveInicial123"</span>, <span class="tk">"dashboardAccess"</span>:true,
+  <span class="tk">"licenseId"</span>:<span class="ts">"MED-1234"</span>, <span class="tk">"specialty"</span>:<span class="ts">"Pediatría"</span> }   <span class="tc">// los 2 últimos solo si role=doctor</span>
+<span class="tc">// 409 si el correo ya existe · 422 si el rol no es válido</span>
+
+<span class="tc">// PATCH — todos opcionales</span>
+{ <span class="tk">"name"</span>:<span class="ts">"…"</span>, <span class="tk">"email"</span>:<span class="ts">"…"</span>, <span class="tk">"role"</span>:<span class="ts">"auditor_medico"</span>,
+  <span class="tk">"status"</span>:<span class="ts">"suspended"</span>,        <span class="tc">// active|suspended|inactive · suspendido NO puede entrar</span>
+  <span class="tk">"dashboardAccess"</span>:false }    <span class="tc">// quitar acceso sin borrar el usuario</span>
+
+<span class="tc">// POST /password — mínimo 8 caracteres. Siempre guarda con PBKDF2.</span>
+{ <span class="tk">"password"</span>:<span class="ts">"NuevaClave456"</span> }
+
+<span class="tc">// DELETE es borrado suave: desactiva y quita el acceso, pero conserva la trazabilidad</span>
+<span class="tc">// (las sesiones que ese médico auditó siguen apuntando a él). → { "deleted": true, "id": "…" }</span></code></pre></div>
+
+        <div class="tw"><table>
+          <tr><th>Rol en la base</th><th><code>dashboardRole</code></th></tr>
+          <tr><td><code>super_admin</code> · <code>admin</code> · <code>soporte_tecnico</code> · <code>oficial_privacidad</code></td><td>Admin</td></tr>
+          <tr><td><code>doctor</code> · <code>auditor_medico</code></td><td>Doctor</td></tr>
+          <tr><td><code>marketing</code> · <code>gerente_cuenta</code></td><td>Sales</td></tr>
+          <tr><td><code>guardian</code> (con acceso concedido)</td><td>Guardian</td></tr>
+        </table></div>
+        <p style="font-size:14px;color:var(--muted)">El login devuelve los dos: <code>role</code> mantiene
+          el contrato que ya usas (Admin/Doctor/Sales/Guardian) y <code>dbRole</code> trae el rol fino por si
+          más adelante quieres permisos por rol real.</p>
 
         <h3>Catálogo geográfico</h3>
         <div class="ep-h"><span class="m get">get</span><span class="path">/api/geo</span>
