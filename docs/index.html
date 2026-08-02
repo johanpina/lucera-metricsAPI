@@ -610,11 +610,13 @@ GET /api/chats?guardian_id=3015d1d6-…</code></pre></div>
   <span class="tk">"revenueUsd"</span>:<span class="tn">184.0</span>,
   <span class="tk">"csat"</span>:null,                <span class="tc">// null = aún no se recoge feedback (falta encuesta post-consulta)</span>
   <span class="tk">"usage"</span>:{ <span class="tk">"sessions"</span>:<span class="tn">210</span>, <span class="tk">"sessionCompletionRate"</span>:<span class="tn">71.4</span>, <span class="tk">"abandoned"</span>:<span class="tn">60</span> },
-  <span class="tk">"safety"</span>:{ <span class="tk">"redFlagsToEmergency"</span>:<span class="tn">14</span>, <span class="tk">"redFlagRate"</span>:<span class="tn">6.7</span>, <span class="tk">"reportedErRate"</span>:null }
+  <span class="tk">"safety"</span>:{ <span class="tk">"redFlagsToEmergency"</span>:<span class="tn">33</span>, <span class="tk">"redFlagRate"</span>:<span class="tn">23.1</span>,
+              <span class="tk">"reportedErRate"</span>:<span class="tn">75.0</span>, <span class="tk">"erConfirmed"</span>:<span class="tn">12</span>, <span class="tk">"erAnswered"</span>:<span class="tn">16</span> }
 }</code></pre></div>
         <table><thead><tr><th>Campo</th><th>Significado</th></tr></thead><tbody>
-          <tr><td><code>csat</code></td><td><b>null</b> mientras el bot no capture <code>feedback_score</code>. Pinta el widget en estado vacío, no en 0.</td></tr>
-          <tr><td><code>reportedErRate</code></td><td><b>null</b>: requiere preguntar en el follow-up si el acudiente acudió a urgencias. Pendiente de definición.</td></tr>
+          <tr><td><code>csat</code></td><td>Sale del seguimiento de 15 min, donde el bot pregunta «¿qué tal ha sido tu experiencia?» con <b>Mala / Regular / Excelente</b> (se guardan como 1 / 3 / 5). Es <b>null</b> hasta que alguien responda.</td></tr>
+          <tr><td><code>reportedErRate</code></td><td>De las urgencias donde el acudiente <b>respondió</b> el seguimiento, cuántas confirmaron haber acudido. <b>null</b> mientras nadie haya respondido.</td></tr>
+          <tr><td><code>erConfirmed</code> · <code>erAnswered</code></td><td>Numerador y denominador, para poder mostrar «12 de 16 confirmaron». El denominador son las <b>respondidas</b>, no todas las urgencias: sin respuesta <b>no</b> significa que no fue.</td></tr>
           <tr><td><code>sessionCompletionRate</code></td><td>% de sesiones en las que el acudiente <b>recibió al menos una orientación</b>.</td></tr>
           <tr><td><code>abandoned</code></td><td>Sesiones donde el acudiente escribió y <b>nunca obtuvo respuesta</b>. Ver el aviso de abajo.</td></tr>
         </tbody></table>

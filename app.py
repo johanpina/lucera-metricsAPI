@@ -1542,6 +1542,16 @@ def stats_summary():
             "WHERE cl.name='emergencia'"
         )[0]["c"] or 0)
         csat = _q("SELECT AVG(feedback_score) v FROM chat_sessions WHERE feedback_score IS NOT NULL")[0]["v"]
+        # Reported ER Rate: de las urgencias donde el acudiente RESPONDIÓ el seguimiento,
+        # cuántas confirmaron haber acudido. El denominador son las respondidas, no todas
+        # las urgencias: "sin respuesta" no significa "no fue".
+        er = _q(
+            """SELECT COUNT(*) respondidas, SUM(cs.er_confirmed=1) fueron
+               FROM chat_sessions cs JOIN classification cl ON cl.id=cs.classification_id
+               WHERE cl.name='emergencia' AND cs.er_confirmed IS NOT NULL"""
+        )[0]
+        er_resp = int(er["respondidas"] or 0)
+        er_si = int(er["fueron"] or 0)
         return {
             "accounts": {
                 "total": total, "active": int(acc["active"] or 0),
@@ -1559,8 +1569,10 @@ def stats_summary():
             "safety": {
                 "redFlagsToEmergency": emerg,
                 "redFlagRate": round(emerg / ses_total * 100, 1) if ses_total else 0.0,
-                # Requiere preguntar en el follow-up si acudió; aún no se captura.
-                "reportedErRate": None,
+                # null mientras nadie haya respondido todavía el seguimiento.
+                "reportedErRate": round(er_si / er_resp * 100, 1) if er_resp else None,
+                "erConfirmed": er_si,        # confirmaron que acudieron
+                "erAnswered": er_resp,       # respondieron el seguimiento (denominador)
             },
         }
     return _cached("stats:summary", 60, _f)
