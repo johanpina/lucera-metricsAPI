@@ -128,7 +128,7 @@
       <a href="#guardians">Guardians · CRUD</a><a href="#patients">Patients · CRUD</a><a href="#chats">Chats</a>
       <a href="#payments">Payments · create</a><a href="#centers">Centers · CRUD</a>
       <a href="#catalogs">Insurances · Specialties · CRUD</a><a href="#usage">Usage / Consumos</a><a href="#stats">Statistics / KPIs</a>
-      <a href="#backlog">★ Backlog del tablero</a><a href="#botstatus">Estado del bot</a>
+      <a href="#backlog">★ Backlog del tablero</a><a href="#backlog">★ Historia clínica (PDF)</a><a href="#botstatus">Estado del bot</a>
       <div class="grp">Integración</div>
       <a href="#react">Conectar el dashboard</a><a href="#future">Endpoints futuros</a>
       <a href="#errores">Errores</a><a href="#interactivo">Docs interactivas</a>
@@ -743,6 +743,41 @@ GET /api/chats?guardian_id=3015d1d6-…</code></pre></div>
         <p style="font-size:14px;color:var(--muted)">El login devuelve los dos: <code>role</code> mantiene
           el contrato que ya usas (Admin/Doctor/Sales/Guardian) y <code>dbRole</code> trae el rol fino por si
           más adelante quieres permisos por rol real.</p>
+
+        <h3>Historia clínica del paciente (PDF)</h3>
+        <p>Compila <b>todas</b> las interacciones de un niño en un solo documento: identificación,
+          acudiente responsable, antecedentes, tabla resumen de atenciones y el detalle cronológico
+          de cada consulta con su conducta recomendada, banderas clínicas y la nota del médico auditor.</p>
+        <div class="ep-h"><span class="m get">get</span><span class="path">/api/patients/{id}/clinical-history</span>
+          <span class="ret">→ <code>application/pdf</code> · <code>?download=true</code></span></div>
+        <div class="single"><span class="cp" data-copy>Copiar</span><pre><code><span class="tc">// Por defecto se abre en el visor (inline). Con ?download=true fuerza la descarga.</span>
+<span class="tk">const</span> res = <span class="tk">await</span> fetch(<span class="ts">`${base}/api/patients/${id}/clinical-history`</span>, {
+  headers: { Authorization: <span class="ts">`Bearer ${token}`</span> } });
+<span class="tk">const</span> url = URL.createObjectURL(<span class="tk">await</span> res.blob());
+window.open(url);            <span class="tc">// o &lt;iframe src={url}&gt; para previsualizar</span>
+
+<span class="tc">// El nombre del archivo viene en Content-Disposition:</span>
+<span class="tc">//   inline; filename="historia-clinica-valentina-muschett.pdf"</span>
+<span class="tc">// 404 si el paciente no existe. Si no tiene consultas, el PDF se genera igual</span>
+<span class="tc">// con los datos del paciente y la nota "aún no registra consultas".</span></code></pre></div>
+        <table><thead><tr><th>Bloque del documento</th><th>De dónde sale</th></tr></thead><tbody>
+          <tr><td>Identificación</td><td>nombre, fecha de nacimiento, edad, documento, peso, tipo de sangre, centro educativo, seguro y póliza</td></tr>
+          <tr><td>Acudiente responsable</td><td>nombre, parentesco, teléfono, código de cuenta, dirección, ciudad/provincia</td></tr>
+          <tr><td>Antecedentes</td><td>alergias y condiciones conocidas del paciente</td></tr>
+          <tr><td>Resumen de atenciones</td><td>una fila por consulta: fecha, conducta (casa/cita/urgencias), banderas y si fue revisada</td></tr>
+          <tr><td>Detalle de las consultas</td><td>por cada una: motivo, orientación entregada, banderas y la nota del médico auditor</td></tr>
+        </tbody></table>
+        <div class="adm warn"><div class="t">Sobre el «resumen» de cada consulta</div><div class="c">
+          <p><code>chat_sessions.summary</code> todavía <b>no lo escribe nadie</b> — queda pendiente que el
+            bot lo genere al cerrar. Para no dejar el bloque vacío, el documento usa datos reales:
+            el <b>motivo</b> sale del primer mensaje con contenido del acudiente (se saltan los saludos
+            sueltos tipo «Buenos días») y la <b>orientación</b> del último mensaje del bot.
+            Cuando exista <code>summary</code>, reemplaza a ambos automáticamente.</p>
+          <p>El pie de cada página lleva el descargo: <i>documento generado automáticamente, contiene
+            orientación pediátrica y NO constituye diagnóstico ni prescripción médica</i>.</p></div></div>
+        <p style="font-size:14px;color:var(--muted)">Por ahora el PDF se <b>renderiza al vuelo</b>. La tabla
+          <code>medical_documents</code> (con <code>document_type='history'</code>) ya existe para registrar
+          el archivo cuando se guarde en un bucket.</p>
 
         <h3>Catálogo geográfico</h3>
         <div class="ep-h"><span class="m get">get</span><span class="path">/api/geo</span>

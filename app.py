@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import hashlib
 import hmac
+import io
 import json
 import os
 import re
@@ -22,8 +23,20 @@ import jwt
 import pymysql
 from fastapi import Depends, FastAPI, Header, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import HTMLResponse
+from fastapi.responses import HTMLResponse, Response
 from pydantic import BaseModel
+from reportlab.lib import colors
+from reportlab.lib.enums import TA_JUSTIFY, TA_LEFT
+from reportlab.lib.pagesizes import A4
+from reportlab.lib.styles import ParagraphStyle, getSampleStyleSheet
+from reportlab.platypus import (
+    KeepTogether,
+    Paragraph,
+    SimpleDocTemplate,
+    Spacer,
+    Table,
+    TableStyle,
+)
 
 # ── DB ───────────────────────────────────────────────────────────────────────
 DB = dict(
@@ -1975,6 +1988,328 @@ def user_delete(uid: str):
     _exec("UPDATE users SET deleted_at=NOW(), is_active=0, status='inactive', "
           "dashboard_access=0, updated_at=NOW() WHERE id=%s", (uid,))
     return {"deleted": True, "id": uid}
+
+
+# ── Historia clínica en PDF ──────────────────────────────────────────────────
+#
+# Compila TODAS las interacciones de un paciente en un solo documento: identificación,
+# antecedentes, y por cada consulta su fecha, la conducta recomendada (casa/cita/urgencias),
+# el motivo, la orientación entregada, las banderas clínicas detectadas y la nota del médico
+# auditor.
+#
+# Nota sobre el "resumen": `chat_sessions.summary` todavía no lo escribe nadie (queda
+# pendiente que el bot lo genere al cerrar). Mientras tanto el documento usa datos REALES en
+# vez de dejar el bloque vacío: el motivo se toma del primer mensaje del acudiente y la
+# orientación del último mensaje del bot. Cuando exista `summary`, reemplaza a ambos.
+_FLAG_ES = {
+    "dificultad_respiratoria": "Dificultad respiratoria",
+    "fiebre_alta": "Fiebre alta",
+    "convulsion": "Convulsión",
+    "deshidratacion": "Deshidratación",
+    "sangrado": "Sangrado",
+    "letargo": "Letargo / decaimiento",
+}
+_CONDUCTA = {
+    "general": ("Manejo en casa", colors.HexColor("#2E7D5B")),
+    "urgente": ("Consulta médica", colors.HexColor("#B5761F")),
+    "emergencia": ("Urgencias", colors.HexColor("#B3402F")),
+}
+_WINE = colors.HexColor("#6B1E33")
+_INK = colors.HexColor("#2B1B21")
+_MUTED = colors.HexColor("#8B7A80")
+_LINE = colors.HexColor("#E7DCD6")
+# El documento es clínico y en español: el parentesco no puede salir en inglés como en el API.
+_REL_ES = {"madre": "Madre", "padre": "Padre", "tutor": "Tutor/a", "abuelo": "Abuelo/a", "otro": "Otro"}
+
+_SALUDOS = {"hola", "holaa", "holaaa", "buenas", "buenos", "dias", "días", "tardes", "noches",
+            "hey", "saludos", "que", "tal", "buen", "dia", "día"}
+
+
+def _motivo(msgs: list[str]) -> str:
+    """Primer mensaje del acudiente que REALMENTE dice algo.
+
+    El primero suele ser un saludo suelto ("Buenos días!", "Holaaaaaa"), que como motivo de
+    consulta no informa nada. Se salta lo que sea solo saludo y se toma el primero con
+    contenido; si no hay ninguno, se devuelve el primero tal cual.
+    """
+    for m in msgs:
+        limpio = re.sub(r"[^\wáéíóúñ ]+", " ", (m or "").lower())
+        palabras = [w for w in limpio.split() if w]
+        if len(palabras) > 3 and not all(w in _SALUDOS for w in palabras):
+            return m
+    return msgs[0] if msgs else ""
+
+
+def _clinical_history_data(pid: str) -> dict:
+    """Reúne todo lo que va en la historia clínica de un paciente."""
+    pat = _q(
+        """SELECT d.*, g.id AS gid, g.full_name AS guardian, g.account_code, g.address,
+                  g.country, g.province, g.city, g.relationship_type,
+                  u.phone_number, ic.name AS insurance, d.policy_number
+           FROM dependents d
+           JOIN guardian_dependent gd ON gd.dependent_id = d.id
+           JOIN guardians g ON g.id = gd.guardian_id
+           JOIN users u ON u.id = g.user_id
+           LEFT JOIN insurance_companies ic
+                  ON ic.id = COALESCE(d.insurance_company_id, g.insurance_company_id)
+           WHERE d.id = %s LIMIT 1""",
+        (pid,),
+    )
+    if not pat:
+        raise HTTPException(404, "patient not found")
+
+    sessions = _q(
+        """SELECT cs.id, cs.opened_at, cs.closed_at, cs.summary, cs.doctor_note,
+                  cs.reviewed_at, cs.tech_failure, cl.name AS cls,
+                  ru.full_name AS reviewer
+           FROM chat_sessions cs
+           LEFT JOIN classification cl ON cl.id = cs.classification_id
+           LEFT JOIN users ru ON ru.id = cs.reviewed_by
+           WHERE cs.dependent_id = %s
+           ORDER BY cs.opened_at""",
+        (pid,),
+    )
+    ids = [s["id"] for s in sessions]
+    user_msgs, last_bot, flags = {}, {}, {}
+    if ids:
+        ph = ",".join(["%s"] * len(ids))
+        for m in _q(
+            f"""SELECT session_id, sender_role, content, created_at FROM messages
+                WHERE session_id IN ({ph}) ORDER BY created_at""",
+            tuple(ids),
+        ):
+            sid = m["session_id"]
+            if m["sender_role"] in ("user", "guardian"):
+                user_msgs.setdefault(sid, []).append(m["content"])
+            else:
+                last_bot[sid] = m["content"]
+        for f in _q(
+            f"""SELECT m.session_id, mf.flag_type FROM message_flags mf
+                JOIN messages m ON m.id = mf.message_id
+                WHERE m.session_id IN ({ph})""",
+            tuple(ids),
+        ):
+            flags.setdefault(f["session_id"], set()).add(f["flag_type"])
+
+    for s in sessions:
+        s["motivo"] = _motivo(user_msgs.get(s["id"], [])).strip()
+        s["orientacion"] = (last_bot.get(s["id"]) or "").strip()
+        s["flags"] = sorted(flags.get(s["id"], []))
+    return {"patient": pat[0], "sessions": sessions}
+
+
+def _hc_styles():
+    ss = getSampleStyleSheet()
+    return {
+        "h1": ParagraphStyle("h1", parent=ss["Title"], fontName="Helvetica-Bold",
+                             fontSize=17, textColor=colors.white, alignment=TA_LEFT, spaceAfter=2),
+        "sub": ParagraphStyle("sub", fontName="Helvetica", fontSize=9,
+                              textColor=colors.HexColor("#E8D5DB"), alignment=TA_LEFT),
+        "h2": ParagraphStyle("h2", fontName="Helvetica-Bold", fontSize=11,
+                             textColor=_WINE, spaceBefore=14, spaceAfter=6),
+        "lbl": ParagraphStyle("lbl", fontName="Helvetica", fontSize=7.5,
+                              textColor=_MUTED, spaceAfter=1),
+        "val": ParagraphStyle("val", fontName="Helvetica-Bold", fontSize=9, textColor=_INK),
+        "body": ParagraphStyle("body", fontName="Helvetica", fontSize=8.5,
+                               textColor=_INK, leading=11.5, alignment=TA_JUSTIFY),
+        "small": ParagraphStyle("small", fontName="Helvetica", fontSize=7.5,
+                                textColor=_MUTED, leading=10),
+    }
+
+
+def _kv_block(pairs, st, cols_n=3, width=479):
+    """Rejilla de etiqueta/valor."""
+    cells, w = [], width / cols_n
+    for i in range(0, len(pairs), cols_n):
+        chunk = pairs[i:i + cols_n] + [("", "")] * (cols_n - len(pairs[i:i + cols_n]))
+        cells.append([
+            [Paragraph(k.upper(), st["lbl"]), Paragraph(v or "—", st["val"])] if k else ""
+            for k, v in chunk
+        ])
+    t = Table(cells, colWidths=[w] * cols_n)
+    t.setStyle(TableStyle([
+        ("VALIGN", (0, 0), (-1, -1), "TOP"),
+        ("BOTTOMPADDING", (0, 0), (-1, -1), 7),
+        ("TOPPADDING", (0, 0), (-1, -1), 3),
+        ("LEFTPADDING", (0, 0), (-1, -1), 0),
+    ]))
+    return t
+
+
+def _build_clinical_pdf(data: dict) -> bytes:
+    p, sessions = data["patient"], data["sessions"]
+    st = _hc_styles()
+    buf = io.BytesIO()
+    name = p["full_name"]
+    doc = SimpleDocTemplate(
+        buf, pagesize=A4, leftMargin=58, rightMargin=58, topMargin=44, bottomMargin=48,
+        title=f"Historia clínica — {name}", author="Lucera",
+    )
+    W = doc.width
+    generated = datetime.now().strftime("%d/%m/%Y %H:%M")
+    el = []
+
+    # ── Encabezado ──
+    head = Table([[
+        [Paragraph("Historia clínica", st["h1"]),
+         Paragraph("Lucera · Orientación pediátrica", st["sub"])],
+        [Paragraph(f'<para align="right">{name}</para>',
+                   ParagraphStyle("pn", fontName="Helvetica-Bold", fontSize=11, textColor=colors.white)),
+         Paragraph(f'<para align="right">Generada el {generated}</para>', st["sub"])],
+    ]], colWidths=[W * 0.58, W * 0.42])
+    head.setStyle(TableStyle([
+        ("BACKGROUND", (0, 0), (-1, -1), _WINE),
+        ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
+        ("LEFTPADDING", (0, 0), (-1, -1), 16), ("RIGHTPADDING", (0, 0), (-1, -1), 16),
+        ("TOPPADDING", (0, 0), (-1, -1), 13), ("BOTTOMPADDING", (0, 0), (-1, -1), 13),
+    ]))
+    el += [head, Spacer(1, 16)]
+
+    # ── Identificación ──
+    el.append(Paragraph("Identificación del paciente", st["h2"]))
+    el.append(_kv_block([
+        ("Nombre", name),
+        ("Fecha de nacimiento", _clean(p["birthday"]) or "—"),
+        ("Edad", f"{_age(p['birthday'])} años"),
+        ("Documento", p.get("id_number") or "—"),
+        ("Peso registrado", f"{p['weight_kg']} kg" if p.get("weight_kg") is not None else "—"),
+        ("Tipo de sangre", BLOOD_OUT.get(p.get("blood_type")) or "—"),
+        ("Centro educativo", p.get("school") or "—"),
+        ("Seguro", p.get("insurance") or "—"),
+        ("Póliza", p.get("policy_number") or "—"),
+    ], st, 3, W))
+
+    # ── Acudiente ──
+    el.append(Paragraph("Acudiente responsable", st["h2"]))
+    el.append(_kv_block([
+        ("Nombre", p.get("guardian") or "—"),
+        ("Parentesco", _REL_ES.get(p.get("relationship_type"), "—")),
+        ("Teléfono", p.get("phone_number") or "—"),
+        ("Cuenta", p.get("account_code") or "—"),
+        ("Dirección", p.get("address") or "—"),
+        ("Ciudad / Provincia", " · ".join(x for x in (p.get("city"), p.get("province")) if x) or "—"),
+    ], st, 3, W))
+
+    # ── Antecedentes ──
+    el.append(Paragraph("Antecedentes", st["h2"]))
+    ante = Table([
+        [Paragraph("ALERGIAS", st["lbl"]), Paragraph("CONDICIONES CONOCIDAS", st["lbl"])],
+        [Paragraph(p.get("allergies") or "Ninguna referida", st["body"]),
+         Paragraph(p.get("known_conditions") or "Ninguna referida", st["body"])],
+    ], colWidths=[W / 2, W / 2])
+    ante.setStyle(TableStyle([
+        ("VALIGN", (0, 0), (-1, -1), "TOP"),
+        ("BACKGROUND", (0, 0), (-1, -1), colors.HexColor("#FAF6F1")),
+        ("BOX", (0, 0), (-1, -1), 0.5, _LINE),
+        ("INNERGRID", (0, 0), (-1, -1), 0.5, _LINE),
+        ("LEFTPADDING", (0, 0), (-1, -1), 9), ("RIGHTPADDING", (0, 0), (-1, -1), 9),
+        ("TOPPADDING", (0, 0), (-1, -1), 7), ("BOTTOMPADDING", (0, 0), (-1, -1), 7),
+    ]))
+    el.append(ante)
+
+    # ── Resumen de atenciones ──
+    el.append(Paragraph(f"Resumen de atenciones ({len(sessions)})", st["h2"]))
+    if not sessions:
+        el.append(Paragraph("Este paciente aún no registra consultas.", st["body"]))
+    else:
+        rows = [[Paragraph(h, ParagraphStyle("th", fontName="Helvetica-Bold", fontSize=7.5,
+                                             textColor=colors.white))
+                 for h in ("FECHA", "CONDUCTA RECOMENDADA", "BANDERAS CLÍNICAS", "REVISADA")]]
+        for s in sessions:
+            label, col = _CONDUCTA.get(s["cls"], ("Sin clasificar", _MUTED))
+            rows.append([
+                Paragraph(_clean(s["opened_at"]) or "—", st["body"]),
+                Paragraph(f'<font color="{col.hexval()}"><b>{label}</b></font>', st["body"]),
+                Paragraph(", ".join(_FLAG_ES.get(f, f) for f in s["flags"]) or "—", st["body"]),
+                Paragraph("Sí" if s["doctor_note"] else "—", st["body"]),
+            ])
+        t = Table(rows, colWidths=[W * 0.20, W * 0.24, W * 0.41, W * 0.15], repeatRows=1)
+        t.setStyle(TableStyle([
+            ("BACKGROUND", (0, 0), (-1, 0), _WINE),
+            ("VALIGN", (0, 0), (-1, -1), "TOP"),
+            ("GRID", (0, 0), (-1, -1), 0.5, _LINE),
+            ("ROWBACKGROUNDS", (0, 1), (-1, -1), [colors.white, colors.HexColor("#FAF6F1")]),
+            ("LEFTPADDING", (0, 0), (-1, -1), 7), ("RIGHTPADDING", (0, 0), (-1, -1), 7),
+            ("TOPPADDING", (0, 0), (-1, -1), 5), ("BOTTOMPADDING", (0, 0), (-1, -1), 5),
+        ]))
+        el.append(t)
+
+        # ── Detalle cronológico ──
+        el.append(Paragraph("Detalle de las consultas", st["h2"]))
+        for i, s in enumerate(sessions, 1):
+            label, col = _CONDUCTA.get(s["cls"], ("Sin clasificar", _MUTED))
+            bloque = [
+                Table([[
+                    Paragraph(f'<b>Consulta {i}</b> · {_clean(s["opened_at"]) or ""}',
+                              ParagraphStyle("ch", fontName="Helvetica", fontSize=9, textColor=_INK)),
+                    Paragraph(f'<para align="right"><font color="{col.hexval()}"><b>{label}</b></font></para>',
+                              ParagraphStyle("cc", fontName="Helvetica", fontSize=9)),
+                ]], colWidths=[W * 0.6, W * 0.4]),
+            ]
+            if s["flags"]:
+                bloque.append(Paragraph(
+                    "<b>Banderas clínicas:</b> " + ", ".join(_FLAG_ES.get(f, f) for f in s["flags"]),
+                    st["body"]))
+            if s["summary"]:
+                bloque.append(Paragraph(f"<b>Resumen:</b> {s['summary']}", st["body"]))
+            else:
+                if s["motivo"]:
+                    bloque.append(Paragraph(f"<b>Motivo referido:</b> {_trim(s['motivo'], 900)}", st["body"]))
+                if s["orientacion"]:
+                    bloque.append(Paragraph(f"<b>Orientación entregada:</b> {_trim(s['orientacion'], 1400)}", st["body"]))
+            if s["doctor_note"]:
+                nota = Table([[Paragraph(
+                    f"<b>Nota del médico auditor</b>"
+                    f"{(' · ' + s['reviewer']) if s['reviewer'] else ''}"
+                    f"{(' · ' + (_clean(s['reviewed_at']) or '')) if s['reviewed_at'] else ''}<br/>"
+                    f"{s['doctor_note']}", st["body"])]], colWidths=[W])
+                nota.setStyle(TableStyle([
+                    ("BACKGROUND", (0, 0), (-1, -1), colors.HexColor("#F2ECE8")),
+                    ("LINEBEFORE", (0, 0), (0, -1), 2, _WINE),
+                    ("LEFTPADDING", (0, 0), (-1, -1), 9), ("RIGHTPADDING", (0, 0), (-1, -1), 9),
+                    ("TOPPADDING", (0, 0), (-1, -1), 6), ("BOTTOMPADDING", (0, 0), (-1, -1), 6),
+                ]))
+                bloque.append(nota)
+            if s["tech_failure"]:
+                bloque.append(Paragraph(
+                    "Esta consulta tuvo una interrupción técnica: alguna respuesta no pudo entregarse.",
+                    st["small"]))
+            el.append(KeepTogether([Spacer(1, 9)] + bloque))
+
+    def _chrome(canvas, doc_):
+        canvas.saveState()
+        canvas.setFont("Helvetica", 6.5)
+        canvas.setFillColor(_MUTED)
+        canvas.drawString(58, 30,
+                          "Documento generado automáticamente por Lucera. Contiene orientación "
+                          "pediátrica, NO constituye diagnóstico ni prescripción médica.")
+        canvas.drawRightString(A4[0] - 58, 30, f"Página {doc_.page}")
+        canvas.setStrokeColor(_LINE)
+        canvas.line(58, 40, A4[0] - 58, 40)
+        canvas.restoreState()
+
+    doc.build(el, onFirstPage=_chrome, onLaterPages=_chrome)
+    return buf.getvalue()
+
+
+def _trim(s: str, n: int) -> str:
+    s = " ".join((s or "").split())
+    return s if len(s) <= n else s[:n].rsplit(" ", 1)[0] + "…"
+
+
+@app.get("/api/patients/{pid}/clinical-history", dependencies=[Depends(require_auth)])
+def clinical_history(pid: str, download: bool = False):
+    """Historia clínica del paciente en PDF: identificación, antecedentes y el compilado
+    de todas sus consultas con conducta, banderas y notas del médico auditor."""
+    data = _clinical_history_data(pid)
+    pdf = _build_clinical_pdf(data)
+    slug = re.sub(r"[^A-Za-z0-9]+", "-", data["patient"]["full_name"]).strip("-").lower()
+    disp = "attachment" if download else "inline"
+    return Response(
+        content=pdf,
+        media_type="application/pdf",
+        headers={"Content-Disposition": f'{disp}; filename="historia-clinica-{slug}.pdf"'},
+    )
 
 
 class DoctorNote(BaseModel):
