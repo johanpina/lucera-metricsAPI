@@ -22,7 +22,7 @@ from pathlib import Path
 
 import jwt
 import pymysql
-from fastapi import Depends, FastAPI, Header, HTTPException, Query
+from fastapi import Depends, FastAPI, Header, HTTPException, Query, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import HTMLResponse, Response
 from pydantic import BaseModel
@@ -248,6 +248,7 @@ def _verify_register_token(token: str) -> str:
 
 
 def require_auth(
+    request: Request,
     authorization: str | None = Header(default=None),
     x_api_key: str | None = Header(default=None),
 ) -> dict:
@@ -266,6 +267,15 @@ def require_auth(
             raise HTTPException(status_code=401, detail="Refresh token cannot be used for API calls.")
         if claims.get("scope") == "portal":
             raise HTTPException(status_code=403, detail="Guardian portal token cannot access admin endpoints.")
+        # Clave inicial (o restablecida) sin cambiar: solo puede ver su perfil y cambiarla.
+        # El aviso `mustChangePassword` no basta -- el front puede ignorarlo y la clave
+        # derivada de la cedula la adivina cualquiera que conozca el documento.
+        if claims.get("mcp") and request.url.path not in _PWD_CHANGE_EXEMPT:
+            raise HTTPException(
+                status_code=403,
+                detail="Password change required. Call POST /api/users/me/password before "
+                       "using the dashboard.",
+            )
         return claims
     raise HTTPException(status_code=401, detail="Not authenticated (send Bearer <access_token> or X-API-Key).")
 
@@ -317,15 +327,18 @@ def login(body: LoginIn) -> dict:
     role = ROLE_TO_DASHBOARD.get(u["role"], "Guardian")
     # Sella el ultimo acceso: es lo que muestra «Ultima sesion» en Mi perfil.
     _exec("UPDATE users SET last_login_at=NOW() WHERE id=%s", (u["id"],))
+    mcp = bool(u.get("must_change_password"))
     return {
-        "access_token": _make_token(sub, name, role, "access", ACCESS_TTL, uid=u["id"], dbRole=u["role"]),
-        "refresh_token": _make_token(sub, name, role, "refresh", REFRESH_TTL, uid=u["id"], dbRole=u["role"]),
+        "access_token": _make_token(sub, name, role, "access", ACCESS_TTL, uid=u["id"],
+                                    dbRole=u["role"], mcp=mcp),
+        "refresh_token": _make_token(sub, name, role, "refresh", REFRESH_TTL, uid=u["id"],
+                                     dbRole=u["role"], mcp=mcp),
         "token_type": "Bearer",
         "expires_in": ACCESS_TTL,
         "user": {"id": u["id"], "email": sub, "name": name, "role": role, "dbRole": u["role"],
                  # Si viene true, el front debe mandar al usuario a cambiar la clave
                  # (entro con una temporal) via POST /api/users/me/password.
-                 "mustChangePassword": bool(u.get("must_change_password"))},
+                 "mustChangePassword": mcp},
     }
 
 
@@ -368,6 +381,9 @@ def refresh(body: RefreshIn) -> dict:
         "access_token": _make_token(
             c["sub"], c.get("name", ""), c.get("role", ""), "access", ACCESS_TTL,
             scope=c.get("scope"), gid=c.get("gid"),   # preserva el scope del portal si aplica
+            # uid/dbRole hay que arrastrarlos o el token renovado deja de identificar a la
+            # persona y las rutas /api/users/me dejan de funcionar tras el primer refresh.
+            uid=c.get("uid"), dbRole=c.get("dbRole"), mcp=c.get("mcp"),
         ),
         "token_type": "Bearer",
         "expires_in": ACCESS_TTL,
@@ -1899,7 +1915,7 @@ def users_internal(page: int = 1, page_limit: int = 20, role: str | None = None,
     rows = _q(
         f"""SELECT u.id, u.email, u.phone_number, u.full_name, u.role, u.status, u.is_active,
                    u.dashboard_access, u.password_hash, u.created_at, u.must_change_password,
-                   ud.license_id, ud.medical_specialty
+                   u.id_number, ud.license_id, ud.medical_specialty
             FROM users u LEFT JOIN users_doctor ud ON ud.user_id=u.id
             WHERE {w} ORDER BY u.created_at DESC LIMIT %s OFFSET %s""",
         tuple(args) + (page_limit, off),
@@ -1923,6 +1939,24 @@ _ROLE_LABELS = {
     "soporte_tecnico":    "Soporte técnico",
 }
 _MIN_PASSWORD = 8
+
+# Prefijo de la clave inicial. La clave de alta es _INITIAL_PREFIX + la cedula, y la cuenta
+# queda marcada para cambiarla en el primer ingreso.
+_INITIAL_PREFIX = "Lucera"
+
+# Rutas que SIGUEN disponibles con la clave inicial sin cambiar: ver el propio perfil y
+# cambiar la contrasena. Cualquier otra responde 403 hasta que la cambie.
+_PWD_CHANGE_EXEMPT = frozenset({"/api/users/me", "/api/users/me/password"})
+
+
+def initial_password(id_number: str) -> str:
+    """Clave inicial derivada de la cedula: `Lucera8-912-3456`.
+
+    Es intencionalmente adivinable por quien conozca el documento -- por eso el alta marca
+    `must_change_password` y `require_auth` bloquea todo lo demas hasta que la cambien.
+    Sin ese bloqueo esto seria una puerta abierta, no una comodidad.
+    """
+    return f"{_INITIAL_PREFIX}{(id_number or '').strip()}"
 
 
 def _check_password_strength(pw: str) -> None:
@@ -1985,6 +2019,7 @@ def _user_row(r: dict) -> dict:
         "hasPassword": bool(r.get("password_hash")),
         # true tras un restablecimiento: el front DEBE forzar el cambio al entrar.
         "mustChangePassword": bool(r.get("must_change_password")),
+        "idNumber": r.get("id_number"),   # cedula del OPERADOR
         "licenseId": r.get("license_id"), "specialty": r.get("medical_specialty"),
         "createdAt": _clean(r.get("created_at")),
     }
@@ -2009,7 +2044,8 @@ class UserCreate(BaseModel):
     name: str
     email: str
     role: str                       # ver _INTERNAL_ROLES
-    password: str | None = None     # si no se manda, queda sin clave (no puede entrar)
+    idNumber: str | None = None     # cedula: de ella sale la clave inicial `Lucera<cedula>`
+    password: str | None = None     # opcional; si se manda, reemplaza a la derivada
     phone: str | None = None        # opcional; si falta se usa un marcador interno
     centerIds: list[str] | None = None   # centros de atencion asignados
     dashboardAccess: bool = True
@@ -2022,6 +2058,7 @@ class UserUpdate(BaseModel):
     email: str | None = None
     role: str | None = None
     status: str | None = None       # active | suspended | inactive
+    idNumber: str | None = None     # cedula del operador
     centerIds: list[str] | None = None   # reemplaza la lista completa
     dashboardAccess: bool | None = None
     licenseId: str | None = None
@@ -2057,8 +2094,15 @@ def user_create(body: UserCreate):
     email = body.email.lower().strip()
     if _q("SELECT id FROM users WHERE email=%s AND deleted_at IS NULL", (email,)):
         raise HTTPException(409, "email already exists")
+    # Clave de alta: la explicita si la mandan; si no, la derivada de la cedula.
+    # Una de las dos tiene que venir, o la persona quedaria sin poder entrar nunca.
     if body.password:
         _check_password_strength(body.password)
+        clave, debe_cambiar = body.password, False
+    elif (body.idNumber or "").strip():
+        clave, debe_cambiar = initial_password(body.idNumber), True
+    else:
+        raise HTTPException(422, "Send idNumber (to derive the initial password) or an explicit password.")
     if body.phone and _q("SELECT id FROM users WHERE phone_number=%s AND deleted_at IS NULL",
                          (_digits(body.phone),)):
         raise HTTPException(409, "phone already exists")
@@ -2066,11 +2110,12 @@ def user_create(body: UserCreate):
     _exec(
         """INSERT INTO users (id, email, phone_number, password_hash, full_name, role,
                               status, is_active, dashboard_access, free_sessions_used,
-                              created_at, updated_at)
-           VALUES (%s,%s,%s,%s,%s,%s,'active',1,%s,0,NOW(),NOW())""",
+                              id_number, must_change_password, created_at, updated_at)
+           VALUES (%s,%s,%s,%s,%s,%s,'active',1,%s,0,%s,%s,NOW(),NOW())""",
         (uid, email, _digits(body.phone) if body.phone else f"dash-{uid[:12]}",
-         _hash_password(body.password) if body.password else "",
-         body.name.strip(), body.role, 1 if body.dashboardAccess else 0),
+         _hash_password(clave), body.name.strip(), body.role,
+         1 if body.dashboardAccess else 0,
+         (body.idNumber or "").strip() or None, 1 if debe_cambiar else 0),
     )
     if body.role == "doctor":
         _exec(
@@ -2080,7 +2125,11 @@ def user_create(body: UserCreate):
         )
     if body.centerIds:
         _set_user_centers(uid, body.centerIds)
-    return _one_user(uid)
+    creado = _one_user(uid)
+    if debe_cambiar:
+        # Se devuelve para que el admin pueda dictarsela. No es secreta: sale de la cedula.
+        creado["initialPassword"] = clave
+    return creado
 
 
 # Las rutas /api/users/me van ANTES que /api/users/{uid}: FastAPI empareja en orden de
@@ -2206,7 +2255,19 @@ def user_change_own_password(body: UserOwnPassword, claims: dict = Depends(requi
         raise HTTPException(422, "The new password must be different from the current one.")
     _exec("UPDATE users SET password_hash=%s, must_change_password=0, updated_at=NOW() "
           "WHERE id=%s", (_hash_password(body.newPassword), uid))
-    return {"ok": True, "mustChangePassword": False}
+    # Tokens NUEVOS sin el flag `mcp`. Sin esto la persona cambia la clave y sigue bloqueada
+    # con el token viejo hasta volver a entrar.
+    u = _q("SELECT email, full_name, role FROM users WHERE id=%s", (uid,))[0]
+    nombre = u["full_name"] or u["email"].split("@")[0]
+    rol = ROLE_TO_DASHBOARD.get(u["role"], "Guardian")
+    return {
+        "ok": True, "mustChangePassword": False,
+        "access_token": _make_token(u["email"], nombre, rol, "access", ACCESS_TTL,
+                                    uid=uid, dbRole=u["role"], mcp=False),
+        "refresh_token": _make_token(u["email"], nombre, rol, "refresh", REFRESH_TTL,
+                                     uid=uid, dbRole=u["role"], mcp=False),
+        "token_type": "Bearer", "expires_in": ACCESS_TTL,
+    }
 
 
 @app.get("/api/users/{uid}", dependencies=[Depends(require_auth)])
@@ -2248,6 +2309,8 @@ def user_update(uid: str, body: UserUpdate, claims: dict = Depends(require_auth)
             raise HTTPException(422, "status must be: active|suspended|inactive")
         sets.append("status=%s"); args.append(body.status)
         sets.append("is_active=%s"); args.append(1 if body.status == "active" else 0)
+    if body.idNumber is not None:
+        sets.append("id_number=%s"); args.append(body.idNumber.strip() or None)
     if body.dashboardAccess is not None:
         sets.append("dashboard_access=%s"); args.append(1 if body.dashboardAccess else 0)
     if sets:
@@ -2292,15 +2355,21 @@ def user_reset_password(uid: str):
     Existe para que un admin no tenga que inventarse una contraseña (y casi siempre elegir
     una débil). La respuesta es lo único que verá: no se guarda en claro en ningún lado.
     """
-    rows = _q("SELECT id, email, full_name FROM users WHERE id=%s AND deleted_at IS NULL", (uid,))
+    rows = _q("SELECT id, email, full_name, id_number FROM users WHERE id=%s AND deleted_at IS NULL",
+              (uid,))
     if not rows:
         raise HTTPException(404, "user not found")
-    temp = _temp_password()
+    # Vuelve a la clave INICIAL (`Lucera<cedula>`), que es la que la persona ya conoce.
+    # Sin cedula guardada no hay de donde derivarla, asi que se genera una al azar.
+    ced = (rows[0]["id_number"] or "").strip()
+    temp = initial_password(ced) if ced else _temp_password()
     _exec("UPDATE users SET password_hash=%s, must_change_password=1, updated_at=NOW() "
           "WHERE id=%s", (_hash_password(temp), uid))
     return {
         "ok": True, "id": uid, "email": rows[0]["email"],
-        "temporaryPassword": temp,          # ← única vez que se ve; no se puede recuperar
+        "temporaryPassword": temp,
+        # Como se derivo: el front puede decir "es Lucera + su cedula" en vez de mostrarla.
+        "derivedFromIdNumber": bool(ced),
         "mustChangePassword": True,
     }
 

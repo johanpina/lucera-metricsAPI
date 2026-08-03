@@ -822,12 +822,46 @@ GET /api/chats?guardian_id=3015d1d6-…</code></pre></div>
           — se reusó en vez de crear otra tabla igual.</p>
         </div></div>
 
+        <div class="adm"><div class="t">★ Clave inicial: <code>Lucera</code> + cédula, con cambio obligatorio</div><div class="c">
+          <p>Al dar de alta a alguien se manda su <code>idNumber</code> y el API arma la clave
+          inicial: cédula <code>8-912-3456</code> → clave <code>Lucera8-912-3456</code>. La cuenta
+          queda marcada y <b>no puede usar el tablero hasta cambiarla</b>.</p>
+          <div class="single"><span class="cp" data-copy>Copiar</span><pre><code><span class="tc">// POST /api/users — sin `password`, la deriva de la cédula</span>
+{ <span class="tk">"name"</span>:<span class="ts">"Ana Ventas"</span>, <span class="tk">"email"</span>:<span class="ts">"ana@lucera.pa"</span>, <span class="tk">"role"</span>:<span class="ts">"marketing"</span>,
+  <span class="tk">"idNumber"</span>:<span class="ts">"8-912-3456"</span> }
+<span class="tc">// → { …, "idNumber":"8-912-3456", "initialPassword":"Lucera8-912-3456",</span>
+<span class="tc">//      "mustChangePassword": true }   ← initialPassword solo viene en la respuesta del alta</span>
+<span class="tc">// 422 si no mandas ni idNumber ni password: quedaría sin poder entrar nunca.</span></code></pre></div>
+
+          <p><b>El bloqueo NO es solo del front.</b> Mientras <code>mustChangePassword</code> siga
+          en <code>true</code>, el token lleva la marca y <b>cualquier endpoint responde 403</b>,
+          salvo dos:</p>
+          <div class="tw"><table>
+            <tr><th>Ruta</th><th>Con la clave inicial sin cambiar</th></tr>
+            <tr><td><code>GET /api/users/me</code></td><td><span class="pill">permitido</span> — para pintar el aviso</td></tr>
+            <tr><td><code>POST /api/users/me/password</code></td><td><span class="pill">permitido</span> — para cambiarla</td></tr>
+            <tr><td>Todo lo demás</td><td><code>403 Password change required.</code></td></tr>
+          </table></div>
+
+          <p>Se hizo así porque la clave sale de la cédula: <b>la adivina cualquiera que conozca el
+          documento</b>. Como aviso que el front puede ignorar sería una puerta abierta; como
+          bloqueo del servidor es una comodidad acotada al primer ingreso.</p>
+
+          <p><b>Al cambiarla, <code>POST /api/users/me/password</code> devuelve tokens nuevos</b>
+          (<code>access_token</code> y <code>refresh_token</code>) ya sin la marca. Guárdalos y
+          reemplaza los anteriores — si sigues usando el token viejo, el 403 continúa.</p>
+
+          <p><code>POST /{id}/password/reset</code> <b>vuelve a la clave inicial</b> cuando el
+          usuario tiene cédula guardada (<code>derivedFromIdNumber: true</code>), para poder decirle
+          «te la dejamos como al inicio». Si no tiene cédula, genera una al azar.</p>
+        </div></div>
+
         <div class="adm"><div class="t">★ Flujo de contraseñas — los tres caminos</div><div class="c">
           <div class="tw"><table>
             <tr><th>Situación</th><th>Endpoint</th><th>Quién la elige</th></tr>
-            <tr><td>Alta de una persona nueva</td><td><code>POST /api/users</code> con <code>password</code></td><td>el admin</td></tr>
+            <tr><td>Alta de una persona nueva</td><td><code>POST /api/users</code> con <code>idNumber</code></td><td><b>derivada</b>: <code>Lucera</code>+cédula</td></tr>
             <tr><td>El admin le pone una clave concreta</td><td><code>POST /api/users/{id}/password</code></td><td>el admin</td></tr>
-            <tr><td><b>Se le olvidó / hay que restablecer</b></td><td><code>POST /api/users/{id}/password/reset</code></td><td><b>la genera el API</b></td></tr>
+            <tr><td><b>Se le olvidó / hay que restablecer</b></td><td><code>POST /api/users/{id}/password/reset</code></td><td><b>vuelve a la inicial</b></td></tr>
             <tr><td>El usuario cambia la suya</td><td><code>POST /api/users/me/password</code></td><td>el propio usuario</td></tr>
           </table></div>
           <p><b>Lo que hay que implementar en la interfaz:</b> tras un <code>reset</code>, la respuesta
