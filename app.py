@@ -315,6 +315,8 @@ def login(body: LoginIn) -> dict:
         raise HTTPException(status_code=401, detail="Wrong email or password.")
     name = u["full_name"] or sub.split("@")[0]
     role = ROLE_TO_DASHBOARD.get(u["role"], "Guardian")
+    # Sella el ultimo acceso: es lo que muestra «Ultima sesion» en Mi perfil.
+    _exec("UPDATE users SET last_login_at=NOW() WHERE id=%s", (u["id"],))
     return {
         "access_token": _make_token(sub, name, role, "access", ACCESS_TTL, uid=u["id"], dbRole=u["role"]),
         "refresh_token": _make_token(sub, name, role, "refresh", REFRESH_TTL, uid=u["id"], dbRole=u["role"]),
@@ -1988,7 +1990,7 @@ def _user_row(r: dict) -> dict:
     }
 
 
-def _one_user(uid: str) -> dict:
+def _one_user(uid: str, with_centers: bool = True) -> dict:
     rows = _q(
         """SELECT u.*, ud.full_name AS doc_name, ud.license_id, ud.medical_specialty
            FROM users u LEFT JOIN users_doctor ud ON ud.user_id=u.id
@@ -1997,7 +1999,10 @@ def _one_user(uid: str) -> dict:
     )
     if not rows:
         raise HTTPException(404, "user not found")
-    return _user_row(rows[0])
+    u = _user_row(rows[0])
+    if with_centers:
+        u["centers"] = _user_centers(uid)
+    return u
 
 
 class UserCreate(BaseModel):
@@ -2006,6 +2011,7 @@ class UserCreate(BaseModel):
     role: str                       # ver _INTERNAL_ROLES
     password: str | None = None     # si no se manda, queda sin clave (no puede entrar)
     phone: str | None = None        # opcional; si falta se usa un marcador interno
+    centerIds: list[str] | None = None   # centros de atencion asignados
     dashboardAccess: bool = True
     licenseId: str | None = None    # solo para doctores
     specialty: str | None = None
@@ -2016,6 +2022,7 @@ class UserUpdate(BaseModel):
     email: str | None = None
     role: str | None = None
     status: str | None = None       # active | suspended | inactive
+    centerIds: list[str] | None = None   # reemplaza la lista completa
     dashboardAccess: bool | None = None
     licenseId: str | None = None
     specialty: str | None = None
@@ -2028,6 +2035,18 @@ class UserPassword(BaseModel):
 class UserOwnPassword(BaseModel):
     currentPassword: str
     newPassword: str
+
+
+class UserMeUpdate(BaseModel):
+    """Lo que CADA usuario puede cambiar de si mismo desde «Mi perfil».
+
+    No incluye role/status/dashboardAccess a proposito: eso es administrar a alguien y
+    va por PATCH /api/users/{id}. Todos opcionales; lo que no venga no se toca.
+    """
+    name: str | None = None
+    email: str | None = None
+    phone: str | None = None            # telefono de WhatsApp / MFA
+    centerIds: list[str] | None = None  # reemplaza la lista completa; [] la vacia
 
 
 @app.post("/api/users", dependencies=[Depends(require_auth)], status_code=201)
@@ -2059,20 +2078,112 @@ def user_create(body: UserCreate):
             "VALUES (%s,%s,%s,%s,NOW())",
             (uid, body.name.strip(), body.licenseId or "", body.specialty),
         )
+    if body.centerIds:
+        _set_user_centers(uid, body.centerIds)
     return _one_user(uid)
 
 
 # Las rutas /api/users/me van ANTES que /api/users/{uid}: FastAPI empareja en orden de
 # declaracion, y si {uid} va primero se traga "me" como si fuera un id y responde 404.
-@app.get("/api/users/me", dependencies=[Depends(require_auth)])
-def user_me(claims: dict = Depends(require_auth)):
-    """Quién soy, según el token. El front lo usa para saber a quién NO debe dejar borrarse
-    y para leer `mustChangePassword` al entrar."""
+def _me_uid(claims: dict) -> str:
+    """Id del usuario del token. La X-API-Key no representa a una persona, así que las
+    rutas /me no pueden usarla."""
     uid = claims.get("uid")
     if not uid:
-        # Token de X-API-Key: no representa a una persona.
         raise HTTPException(400, "This token is not tied to a user (X-API-Key has no identity).")
-    return _one_user(uid)
+    return uid
+
+
+def _user_centers(uid: str) -> list[dict]:
+    """Centros de atención del usuario.
+
+    Se guardan en `doctor_hospital_affiliations`. El nombre dice «doctor», pero su
+    `doctor_id` es una FK a `users.id`: sirve para CUALQUIER rol, y por eso la reusamos
+    en vez de crear otra tabla equivalente.
+    """
+    return [
+        {"id": r["id"], "name": r["name"], "city": r["city"]}
+        for r in _q(
+            """SELECT h.id, h.name, h.city FROM doctor_hospital_affiliations a
+               JOIN hospitals h ON h.id=a.hospital_id
+               WHERE a.doctor_id=%s AND a.active=1 ORDER BY h.name""",
+            (uid,),
+        )
+    ]
+
+
+def _set_user_centers(uid: str, center_ids: list[str]) -> None:
+    """Reemplaza los centros del usuario por la lista dada. Idempotente: mandar la misma
+    lista dos veces deja lo mismo. Lista vacía = quitarle todos."""
+    ids = [c for c in dict.fromkeys(center_ids) if c]      # sin duplicados, conserva el orden
+    if ids:
+        marcas = ",".join(["%s"] * len(ids))
+        validos = {r["id"] for r in _q(f"SELECT id FROM hospitals WHERE id IN ({marcas})", tuple(ids))}
+        faltan = [c for c in ids if c not in validos]
+        if faltan:
+            raise HTTPException(422, f"Unknown center id(s): {', '.join(faltan)}")
+    _exec("DELETE FROM doctor_hospital_affiliations WHERE doctor_id=%s", (uid,))
+    for cid in ids:
+        _exec("INSERT INTO doctor_hospital_affiliations (doctor_id, hospital_id, active) "
+              "VALUES (%s,%s,1)", (uid, cid))
+
+
+def _me_payload(uid: str) -> dict:
+    """Perfil propio: el usuario más lo que la pantalla «Mi perfil» necesita de más."""
+    u = _one_user(uid)                       # ya trae `centers`
+    row = _q("SELECT last_login_at FROM users WHERE id=%s", (uid,))
+    u["lastLoginAt"] = _clean(row[0]["last_login_at"]) if row and row[0]["last_login_at"] else None
+    # Lo que puede editar de sí mismo. `role` NO está: nadie se auto-asciende.
+    u["editableFields"] = ["name", "email", "phone", "centerIds"]
+    return u
+
+
+@app.get("/api/users/me", dependencies=[Depends(require_auth)])
+def user_me(claims: dict = Depends(require_auth)):
+    """Perfil propio. Lo usa la pantalla «Mi perfil» para pintarse, y el resto del tablero
+    para saber a quién NO dejar borrarse y si hay que forzar el cambio de clave."""
+    return _me_payload(_me_uid(claims))
+
+
+@app.patch("/api/users/me", dependencies=[Depends(require_auth)])
+def user_update_me(body: UserMeUpdate, claims: dict = Depends(require_auth)):
+    """Guarda los cambios de «Mi perfil». Funciona igual para cualquier rol — admin,
+    ventas, médico, auditor: cada quien edita lo suyo.
+
+    A propósito NO deja tocar `role`, `status` ni `dashboardAccess`: eso es administrar a
+    alguien, y va por `PATCH /api/users/{id}`. Si se pudieran cambiar aquí, cualquiera con
+    sesión abierta podría auto-ascenderse a administrador.
+    """
+    uid = _me_uid(claims)
+    if not _q("SELECT id FROM users WHERE id=%s AND deleted_at IS NULL", (uid,)):
+        raise HTTPException(404, "user not found")
+    sets, args = [], []
+    if body.name is not None:
+        if not body.name.strip():
+            raise HTTPException(422, "name cannot be empty")
+        sets.append("full_name=%s"); args.append(body.name.strip())
+    if body.email is not None:
+        email = body.email.lower().strip()
+        if "@" not in email or "." not in email.split("@")[-1]:
+            raise HTTPException(422, "email is not valid")
+        if _q("SELECT id FROM users WHERE email=%s AND id<>%s AND deleted_at IS NULL", (email, uid)):
+            raise HTTPException(409, "email already exists")
+        sets.append("email=%s"); args.append(email)
+    if body.phone is not None:
+        phone = _digits(body.phone)
+        if phone:
+            if _q("SELECT id FROM users WHERE phone_number=%s AND id<>%s AND deleted_at IS NULL",
+                  (phone, uid)):
+                raise HTTPException(409, "phone already exists")
+            sets.append("phone_number=%s"); args.append(phone)
+    if sets:
+        _exec(f"UPDATE users SET {', '.join(sets)}, updated_at=NOW() WHERE id=%s", tuple(args + [uid]))
+    # Espejo en users_doctor: si es médico, su nombre vive en dos sitios.
+    if body.name is not None and _q("SELECT user_id FROM users_doctor WHERE user_id=%s", (uid,)):
+        _exec("UPDATE users_doctor SET full_name=%s WHERE user_id=%s", (body.name.strip(), uid))
+    if body.centerIds is not None:
+        _set_user_centers(uid, body.centerIds)
+    return _me_payload(uid)
 
 
 @app.post("/api/users/me/password", dependencies=[Depends(require_auth)])
@@ -2152,6 +2263,8 @@ def user_update(uid: str, body: UserUpdate, claims: dict = Depends(require_auth)
                 ds.append("medical_specialty=%s"); da.append(body.specialty)
             if ds:
                 _exec(f"UPDATE users_doctor SET {', '.join(ds)} WHERE user_id=%s", tuple(da + [uid]))
+    if body.centerIds is not None:
+        _set_user_centers(uid, body.centerIds)
     return _one_user(uid)
 
 

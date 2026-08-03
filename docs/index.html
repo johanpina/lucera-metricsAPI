@@ -758,7 +758,8 @@ GET /api/chats?guardian_id=3015d1d6-…</code></pre></div>
         <div class="ep-h" style="margin-top:.7em"><span class="m post" style="background:#d9822b">patch</span><span class="path">/api/users/{id}</span></div>
         <div class="ep-h" style="margin-top:.7em"><span class="m post">post</span><span class="path">/api/users/{id}/password</span></div>
         <div class="ep-h" style="margin-top:.7em"><span class="m post">post</span><span class="path">/api/users/{id}/password/reset</span><span class="ret">★ → devuelve una clave temporal</span></div>
-        <div class="ep-h" style="margin-top:.7em"><span class="m get">get</span><span class="path">/api/users/me</span><span class="ret">★ quién soy</span></div>
+        <div class="ep-h" style="margin-top:.7em"><span class="m get">get</span><span class="path">/api/users/me</span><span class="ret">★ mi perfil</span></div>
+        <div class="ep-h" style="margin-top:.7em"><span class="m post" style="background:#d9822b">patch</span><span class="path">/api/users/me</span><span class="ret">★ guardar «Mi perfil»</span></div>
         <div class="ep-h" style="margin-top:.7em"><span class="m post">post</span><span class="path">/api/users/me/password</span><span class="ret">★ cambiar la propia, con la actual</span></div>
         <div class="ep-h" style="margin-top:.7em"><span class="m get">get</span><span class="path">/api/roles</span><span class="ret">★ catálogo para el desplegable</span></div>
         <div class="ep-h" style="margin-top:.7em"><span class="m post" style="background:#b23b4a">del</span><span class="path">/api/users/{id}</span></div>
@@ -791,6 +792,35 @@ GET /api/chats?guardian_id=3015d1d6-…</code></pre></div>
 
 <span class="tc">// DELETE es borrado suave: desactiva y quita el acceso, pero conserva la trazabilidad</span>
 <span class="tc">// (las sesiones que ese médico auditó siguen apuntando a él). → { "deleted": true, "id": "…" }</span></code></pre></div>
+
+        <div class="adm"><div class="t">★ Pantalla «Mi perfil» — cada quien edita lo suyo</div><div class="c">
+          <p>Funciona igual para <b>cualquier rol</b>: admin, ventas, médico, auditor. El usuario
+          del token es el que se edita — no hace falta mandar el id.</p>
+          <div class="single"><span class="cp" data-copy>Copiar</span><pre><code><span class="tc">// GET /api/users/me → lo que necesita la pantalla para pintarse</span>
+{ <span class="tk">"id"</span>:<span class="ts">"…"</span>, <span class="tk">"name"</span>:<span class="ts">"Admin Téc"</span>, <span class="tk">"email"</span>:<span class="ts">"admin@lucera.pa"</span>,
+  <span class="tk">"phone"</span>:<span class="ts">"50761234567"</span>,        <span class="tc">// teléfono de WhatsApp / MFA</span>
+  <span class="tk">"role"</span>:<span class="ts">"admin"</span>, <span class="tk">"dashboardRole"</span>:<span class="ts">"Admin"</span>,   <span class="tc">// para el chip del rol</span>
+  <span class="tk">"centers"</span>:[ { <span class="tk">"id"</span>:<span class="ts">"…"</span>, <span class="tk">"name"</span>:<span class="ts">"Hospital Nacional"</span>, <span class="tk">"city"</span>:<span class="ts">"Ciudad de Panamá"</span> } ],
+  <span class="tk">"lastLoginAt"</span>:<span class="ts">"2026-08-03 16:03"</span>, <span class="tc">// null = NUNCA ha entrado (no es lo mismo que "hace mucho")</span>
+  <span class="tk">"mustChangePassword"</span>:false,
+  <span class="tk">"editableFields"</span>:[<span class="ts">"name"</span>,<span class="ts">"email"</span>,<span class="ts">"phone"</span>,<span class="ts">"centerIds"</span>] }  <span class="tc">// lo único que acepta el PATCH</span>
+
+<span class="tc">// PATCH /api/users/me — todos opcionales; lo que no mandes no se toca</span>
+{ <span class="tk">"name"</span>:<span class="ts">"Admin Téc"</span>, <span class="tk">"email"</span>:<span class="ts">"admin@lucera.pa"</span>, <span class="tk">"phone"</span>:<span class="ts">"+507 6123-4567"</span>,
+  <span class="tk">"centerIds"</span>:[<span class="ts">"id-hospital-1"</span>,<span class="ts">"id-hospital-2"</span>] }   <span class="tc">// REEMPLAZA la lista · [] la vacía</span>
+<span class="tc">// 409 correo o teléfono ya usados · 422 correo inválido, nombre vacío o centro inexistente</span>
+<span class="tc">// Devuelve el mismo objeto del GET, ya actualizado.</span></code></pre></div>
+          <p><b>Lo que este endpoint NO permite, a propósito:</b> <code>role</code>,
+          <code>status</code> y <code>dashboardAccess</code>. Eso es administrar a alguien y va por
+          <code>PATCH /api/users/{id}</code>. Si se pudieran cambiar aquí, cualquiera con la sesión
+          abierta podría auto-ascenderse a administrador.</p>
+          <p>El desplegable «Centros de atención» se llena con <code>GET /api/centers</code>, y el
+          botón «Cambiar contraseña» va a <code>POST /api/users/me/password</code> (ver abajo).</p>
+          <p style="font-size:13px;color:var(--muted)">Detalle de implementación: los centros se
+          guardan en <code>doctor_hospital_affiliations</code>. La tabla se llama «doctor» pero su
+          <code>doctor_id</code> es una FK a <code>users.id</code>, así que sirve para cualquier rol
+          — se reusó en vez de crear otra tabla igual.</p>
+        </div></div>
 
         <div class="adm"><div class="t">★ Flujo de contraseñas — los tres caminos</div><div class="c">
           <div class="tw"><table>
