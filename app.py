@@ -519,6 +519,19 @@ def _children_for(gids: list[str]) -> dict:
     return out
 
 
+def _sub_state(expires) -> str:
+    """Estado de la suscripción, resuelto en el backend para que el front no
+    reimplemente la semántica del NULL:
+
+    - `none`    → sin vencimiento (cortesía, validadores, altas previas a la columna)
+    - `active`  → paga y vigente
+    - `expired` → se le venció
+    """
+    if not expires:
+        return "none"
+    return "active" if expires > datetime.now() else "expired"
+
+
 def _guardian_row(g: dict, kids: list[dict]) -> dict:
     insurance = (
         {"id": g["ins_id"], "name": g["ins_name"], "policyNumber": g.get("policy") or None}
@@ -532,6 +545,10 @@ def _guardian_row(g: dict, kids: list[dict]) -> dict:
         "province": g.get("province") or "", "address": g.get("address"),
         "city": g["city"] or g["province"] or "", "status": GSTATUS_OUT.get(g["ustatus"], "active"),
         "plan": _plan(g["cycle"]), "insurance": insurance, "registeredAt": _clean(g["created_at"]),
+        # Vigencia de la suscripción. null = SIN VENCIMIENTO (cortesía, validadores, altas
+        # previas a la columna); no confundir con vencida — para eso está subscriptionState.
+        "subscriptionExpiresAt": _clean(g.get("expires_at")) if g.get("expires_at") else None,
+        "subscriptionState": _sub_state(g.get("expires_at")),
         "portalEnabled": bool(g.get("portal_enabled")),   # ¿ya fijó contraseña del portal?
         "chats": int(g.get("chats") or 0),                # nº de consultas de la cuenta
         "children": kids,
@@ -542,6 +559,7 @@ _G_SELECT = """SELECT g.id, g.full_name AS name, g.relationship_type AS rel, g.c
     g.account_code, g.gender, g.address,
     g.insurance_company_id AS ins_id, ic.name AS ins_name, g.policy_number AS policy,
     u.phone_number AS phone, u.email, u.status AS ustatus, u.created_at,
+    u.subscription_expires_at AS expires_at,
     LEFT(u.password_hash, 6) = 'pbkdf2' AS portal_enabled,
     (SELECT COUNT(*) FROM chat_sessions cs WHERE cs.guardian_id=g.id) AS chats,
     (SELECT p.billing_cycle FROM payments p WHERE p.user_id=u.id AND p.status='confirmed'
@@ -591,6 +609,8 @@ def _apply_plan(uid: str, plan: str | None) -> None:
     # anula cualquier pago confirmado previo (→ vuelve a free)
     _exec("UPDATE payments SET status='refunded' WHERE user_id=%s AND status='confirmed'", (uid,))
     if plan == "free":
+        # Sin plan pago no hay qué vencer. NULL = sin vencimiento, como antes de la columna.
+        _exec("UPDATE users SET subscription_expires_at=NULL WHERE id=%s", (uid,))
         return
     cycle = "annual" if plan == "premium_annual" else "monthly"
     prem = _q("SELECT id, price_monthly_usd, price_annual_usd FROM subscription_plans "
@@ -601,6 +621,17 @@ def _apply_plan(uid: str, plan: str | None) -> None:
     _exec("""INSERT INTO payments (id, user_id, plan_id, billing_cycle, provider, amount_usd, status, created_at, confirmed_at)
              VALUES (%s,%s,%s,%s,'tilopay',%s,'confirmed',NOW(),NOW())""",
           (str(uuid.uuid4()), uid, prem[0]["id"], cycle, amount))
+    # Asignar el plan desde el panel NO pasa por el bot, así que la vigencia se fija también
+    # aquí. Misma regla que app/services/subscriptions.py del bot: encadena si sigue vigente,
+    # cuenta desde hoy si venció o nunca tuvo. INTERVAL de MySQL ya recorta el fin de mes
+    # (31-ene + 1 MONTH = 28-feb), igual que el _add_months del bot.
+    _exec(
+        "UPDATE users SET subscription_expires_at = DATE_ADD("
+        "  GREATEST(COALESCE(subscription_expires_at, NOW()), NOW()), "
+        f"  INTERVAL 1 {'YEAR' if cycle == 'annual' else 'MONTH'}) "
+        "WHERE id=%s",
+        (uid,),
+    )
 
 
 class GuardianCreate(BaseModel):
@@ -1802,6 +1833,7 @@ def accounts(page: int = 1, page_limit: int = 20, q: str | None = None):
     rows = _q(
         f"""SELECT g.id, g.account_code, g.full_name, g.gender, g.country, g.province, g.city,
                    g.address, u.phone_number, u.email, u.status, u.created_at, ic.name AS insurance,
+                   u.subscription_expires_at AS expires_at,
                    (SELECT COUNT(*) FROM guardian_dependent gd WHERE gd.guardian_id=g.id) children,
                    (SELECT COUNT(*) FROM chat_sessions cs WHERE cs.guardian_id=g.id) chats,
                    (SELECT p.status FROM payments p WHERE p.user_id=u.id
@@ -1821,6 +1853,9 @@ def accounts(page: int = 1, page_limit: int = 20, q: str | None = None):
         "insurance": r["insurance"], "status": r["status"], "plan": r["plan"] or "free",
         "paymentStatus": r["pay_status"], "children": int(r["children"] or 0),
         "chats": int(r["chats"] or 0), "createdAt": _clean(r["created_at"]),
+        # null = sin vencimiento; usar subscriptionState para pintar el estado.
+        "subscriptionExpiresAt": _clean(r["expires_at"]) if r["expires_at"] else None,
+        "subscriptionState": _sub_state(r["expires_at"]),
     } for r in rows]
     return _envelope(items, page, page_limit, total)
 

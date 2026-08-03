@@ -346,6 +346,8 @@ GET /api/portal-links?only_missing=true
   <span class="tk">"chats"</span>:<span class="tn">40</span>,             <span class="tc">// ★ nº de consultas de la cuenta</span>
   <span class="tk">"status"</span>:<span class="ts">"active"</span>,       <span class="tc">// active|suspended|inactive</span>
   <span class="tk">"plan"</span>:<span class="ts">"free"</span>,           <span class="tc">// free|premium_monthly|premium_annual</span>
+  <span class="tk">"subscriptionExpiresAt"</span>:<span class="ts">"2026-09-03 04:50"</span>,  <span class="tc">// ★ null = SIN vencimiento</span>
+  <span class="tk">"subscriptionState"</span>:<span class="ts">"active"</span>,   <span class="tc">// ★ active|expired|none — pinta con ESTE, no con la fecha</span>
   <span class="tk">"insurance"</span>:{ <span class="tk">"id"</span>:<span class="tn">10</span>, <span class="tk">"name"</span>:<span class="ts">"Acerta"</span>, <span class="tk">"policyNumber"</span>:<span class="ts">"POL-123"</span> },  <span class="tc">// o null si ningún hijo tiene seguro</span>
   <span class="tk">"registeredAt"</span>:<span class="ts">"2026-07-01 07:04"</span>,
   <span class="tk">"children"</span>:[ { <span class="tk">"id"</span>:<span class="ts">"…"</span>, <span class="tk">"name"</span>:<span class="ts">"Lucas Muschett"</span>, <span class="tk">"birthDate"</span>:<span class="ts">"2022-04-05"</span>,
@@ -682,11 +684,30 @@ GET /api/chats?guardian_id=3015d1d6-…</code></pre></div>
   <span class="tk">"guardian"</span>:<span class="ts">"Ana Muschett"</span>, <span class="tk">"gender"</span>:<span class="ts">"femenino"</span>, <span class="tk">"phone"</span>:<span class="ts">"507…"</span>, <span class="tk">"email"</span>:<span class="ts">"…"</span>,
   <span class="tk">"country"</span>:<span class="ts">"Panamá"</span>, <span class="tk">"province"</span>:<span class="ts">"Panamá Oeste"</span>, <span class="tk">"city"</span>:<span class="ts">"Arraiján"</span>, <span class="tk">"address"</span>:<span class="ts">"…"</span>,
   <span class="tk">"insurance"</span>:<span class="ts">"ASSA"</span>, <span class="tk">"status"</span>:<span class="ts">"active"</span>, <span class="tk">"plan"</span>:<span class="ts">"1_hijo"</span>, <span class="tk">"paymentStatus"</span>:<span class="ts">"confirmed"</span>,
-  <span class="tk">"children"</span>:<span class="tn">2</span>, <span class="tk">"chats"</span>:<span class="tn">17</span>, <span class="tk">"createdAt"</span>:<span class="ts">"2026-07-14T…"</span>
+  <span class="tk">"children"</span>:<span class="tn">2</span>, <span class="tk">"chats"</span>:<span class="tn">17</span>, <span class="tk">"createdAt"</span>:<span class="ts">"2026-07-14T…"</span>,
+  <span class="tk">"subscriptionExpiresAt"</span>:<span class="ts">"2026-09-03 04:50"</span>,  <span class="tc">// ★ null = SIN vencimiento</span>
+  <span class="tk">"subscriptionState"</span>:<span class="ts">"active"</span>    <span class="tc">// ★ active|expired|none</span>
 } ], <span class="tk">"page"</span>:<span class="tn">1</span>, <span class="tk">"total"</span>:<span class="tn">42</span> }</code></pre></div>
         <p style="font-size:14px;color:var(--muted)"><code>q</code> busca por nombre, código de cuenta o teléfono.
           <b>Ojo:</b> <code>accountCode</code> identifica la <b>cuenta/familia</b>;
           la <b>cédula del paciente</b> es <code>idNumber</code> en <code>/api/patients</code> — son cosas distintas.</p>
+
+        <div class="adm"><div class="t">★ Vigencia de la suscripción — cómo pintarla</div><div class="c">
+          <p><code>subscriptionExpiresAt</code> dice hasta cuándo está paga la cuenta. Viene también
+            en <code>/api/guardians</code> y <code>/api/guardians/{id}</code>.</p>
+          <p><b><code>null</code> NO significa vencida, significa que no vence</b> — cortesía,
+            validadores externos y todas las cuentas anteriores a este campo. Para no tener que
+            reimplementar esa regla en el front, usa <code>subscriptionState</code>:</p>
+          <div class="tw"><table>
+            <tr><th>subscriptionState</th><th>Significa</th><th>Sugerencia visual</th></tr>
+            <tr><td><code>active</code></td><td>paga y vigente</td><td>verde · «vence el {fecha}»</td></tr>
+            <tr><td><code>expired</code></td><td>se le venció</td><td>rojo · «venció el {fecha}»</td></tr>
+            <tr><td><code>none</code></td><td>sin vencimiento</td><td>gris · «—» (no pintar alerta)</td></tr>
+          </table></div>
+          <p>Se fija sola: cada pago confirmado extiende un ciclo, y también al asignar plan desde
+            <code>PATCH /api/guardians/{id}</code>. Si renuevas antes de vencer, el ciclo nuevo se
+            encadena al final del vigente — pagar temprano no quita días. <b>Es de solo lectura</b>:
+            no hay campo para editarla a mano; se cambia asignando el <code>plan</code>.</p></div></div>
 
         <h3>Usuarios del tablero · CRUD completo</h3>
         <div class="adm"><div class="t">✅ Los usuarios ya viven en la base de datos</div><div class="c">
