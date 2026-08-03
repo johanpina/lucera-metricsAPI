@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import hashlib
 import hmac
+import secrets
 import io
 import json
 import os
@@ -174,7 +175,7 @@ ROLE_TO_DASHBOARD = {
 def _dashboard_user(email: str) -> dict | None:
     """Busca un operador del tablero por correo. Devuelve None si no puede entrar."""
     rows = _q(
-        """SELECT id, email, full_name, role, status, password_hash
+        """SELECT id, email, full_name, role, status, password_hash, must_change_password
            FROM users
            WHERE email=%s AND deleted_at IS NULL AND status='active' AND dashboard_access=1""",
         (email,),
@@ -319,7 +320,10 @@ def login(body: LoginIn) -> dict:
         "refresh_token": _make_token(sub, name, role, "refresh", REFRESH_TTL, uid=u["id"], dbRole=u["role"]),
         "token_type": "Bearer",
         "expires_in": ACCESS_TTL,
-        "user": {"id": u["id"], "email": sub, "name": name, "role": role, "dbRole": u["role"]},
+        "user": {"id": u["id"], "email": sub, "name": name, "role": role, "dbRole": u["role"],
+                 # Si viene true, el front debe mandar al usuario a cambiar la clave
+                 # (entro con una temporal) via POST /api/users/me/password.
+                 "mustChangePassword": bool(u.get("must_change_password"))},
     }
 
 
@@ -1892,7 +1896,7 @@ def users_internal(page: int = 1, page_limit: int = 20, role: str | None = None,
     total = _q(f"SELECT COUNT(*) c FROM users u WHERE {w}", tuple(args))[0]["c"]
     rows = _q(
         f"""SELECT u.id, u.email, u.phone_number, u.full_name, u.role, u.status, u.is_active,
-                   u.dashboard_access, u.password_hash, u.created_at,
+                   u.dashboard_access, u.password_hash, u.created_at, u.must_change_password,
                    ud.license_id, ud.medical_specialty
             FROM users u LEFT JOIN users_doctor ud ON ud.user_id=u.id
             WHERE {w} ORDER BY u.created_at DESC LIMIT %s OFFSET %s""",
@@ -1904,6 +1908,70 @@ def users_internal(page: int = 1, page_limit: int = 20, role: str | None = None,
 _INTERNAL_ROLES = ("super_admin", "admin", "doctor", "auditor_medico", "marketing",
                    "gerente_cuenta", "oficial_privacidad", "soporte_tecnico")
 
+# Etiqueta legible de cada rol. Vive aquí y se sirve por /api/roles para que el tablero no
+# tenga que mantener su propia copia (y quedar desfasado cuando se agregue un rol).
+_ROLE_LABELS = {
+    "super_admin":        "Superadministrador",
+    "admin":              "Administrador",
+    "doctor":             "Médico",
+    "auditor_medico":     "Auditor médico",
+    "marketing":          "Marketing",
+    "gerente_cuenta":     "Gerente de cuenta",
+    "oficial_privacidad": "Oficial de privacidad",
+    "soporte_tecnico":    "Soporte técnico",
+}
+_MIN_PASSWORD = 8
+
+
+def _check_password_strength(pw: str) -> None:
+    """Mínimos de contraseña. Deliberadamente simples: largo y que no sea de las obvias.
+    Reglas de composición (mayúscula+número+símbolo) empujan a la gente a 'Password1!'."""
+    if len(pw) < _MIN_PASSWORD:
+        raise HTTPException(422, f"password must be at least {_MIN_PASSWORD} characters")
+    if pw.lower() in ("password", "12345678", "contrasena", "contraseña", "lucera123",
+                      "qwertyui", "11111111", "abcd1234"):
+        raise HTTPException(422, "That password is too common. Choose another one.")
+
+
+def _temp_password() -> str:
+    """Contraseña temporal legible por teléfono: sin caracteres que se confundan
+    (0/O, 1/l/I) para que se pueda dictar sin errores."""
+    alfabeto = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789abcdefghijkmnpqrstuvwxyz"
+    return "".join(secrets.choice(alfabeto) for _ in range(12))
+
+
+def _count_active_super_admins(exclude_uid: str | None = None) -> int:
+    sql = ("SELECT COUNT(*) c FROM users WHERE role='super_admin' AND deleted_at IS NULL "
+           "AND status='active' AND dashboard_access=1")
+    args: tuple = ()
+    if exclude_uid:
+        sql += " AND id<>%s"
+        args = (exclude_uid,)
+    return int(_q(sql, args)[0]["c"] or 0)
+
+
+def _guard_last_super_admin(uid: str, role: str) -> None:
+    """Impide dejar el tablero sin ningún superadministrador activo. Si eso pasara,
+    nadie podría volver a crear usuarios y habría que arreglarlo por SQL a mano."""
+    if role == "super_admin" and _count_active_super_admins(exclude_uid=uid) == 0:
+        raise HTTPException(
+            409, "This is the last active super_admin. Assign another one before removing or "
+                 "downgrading this user."
+        )
+
+
+@app.get("/api/roles", dependencies=[Depends(require_auth)])
+def roles_catalog():
+    """Catálogo de roles internos asignables, con su etiqueta y el rol de tablero al que mapea.
+
+    Sirve para llenar el desplegable de la pestaña Cuentas sin hardcodear la lista.
+    `guardian` NO aparece: los acudientes se crean por el registro del bot, no por aquí.
+    """
+    return {"items": [
+        {"value": r, "label": _ROLE_LABELS.get(r, r), "dashboardRole": ROLE_TO_DASHBOARD.get(r)}
+        for r in _INTERNAL_ROLES
+    ]}
+
 
 def _user_row(r: dict) -> dict:
     return {
@@ -1913,6 +1981,8 @@ def _user_row(r: dict) -> dict:
         "status": r["status"], "isActive": bool(r.get("is_active")),
         "dashboardAccess": bool(r.get("dashboard_access")),
         "hasPassword": bool(r.get("password_hash")),
+        # true tras un restablecimiento: el front DEBE forzar el cambio al entrar.
+        "mustChangePassword": bool(r.get("must_change_password")),
         "licenseId": r.get("license_id"), "specialty": r.get("medical_specialty"),
         "createdAt": _clean(r.get("created_at")),
     }
@@ -1935,6 +2005,7 @@ class UserCreate(BaseModel):
     email: str
     role: str                       # ver _INTERNAL_ROLES
     password: str | None = None     # si no se manda, queda sin clave (no puede entrar)
+    phone: str | None = None        # opcional; si falta se usa un marcador interno
     dashboardAccess: bool = True
     licenseId: str | None = None    # solo para doctores
     specialty: str | None = None
@@ -1954,6 +2025,11 @@ class UserPassword(BaseModel):
     password: str
 
 
+class UserOwnPassword(BaseModel):
+    currentPassword: str
+    newPassword: str
+
+
 @app.post("/api/users", dependencies=[Depends(require_auth)], status_code=201)
 def user_create(body: UserCreate):
     """Crea un usuario interno (no acudiente) del tablero."""
@@ -1962,13 +2038,19 @@ def user_create(body: UserCreate):
     email = body.email.lower().strip()
     if _q("SELECT id FROM users WHERE email=%s AND deleted_at IS NULL", (email,)):
         raise HTTPException(409, "email already exists")
+    if body.password:
+        _check_password_strength(body.password)
+    if body.phone and _q("SELECT id FROM users WHERE phone_number=%s AND deleted_at IS NULL",
+                         (_digits(body.phone),)):
+        raise HTTPException(409, "phone already exists")
     uid = str(uuid.uuid4())
     _exec(
         """INSERT INTO users (id, email, phone_number, password_hash, full_name, role,
                               status, is_active, dashboard_access, free_sessions_used,
                               created_at, updated_at)
            VALUES (%s,%s,%s,%s,%s,%s,'active',1,%s,0,NOW(),NOW())""",
-        (uid, email, f"dash-{uid[:12]}", _hash_password(body.password) if body.password else "",
+        (uid, email, _digits(body.phone) if body.phone else f"dash-{uid[:12]}",
+         _hash_password(body.password) if body.password else "",
          body.name.strip(), body.role, 1 if body.dashboardAccess else 0),
     )
     if body.role == "doctor":
@@ -1980,15 +2062,64 @@ def user_create(body: UserCreate):
     return _one_user(uid)
 
 
+# Las rutas /api/users/me van ANTES que /api/users/{uid}: FastAPI empareja en orden de
+# declaracion, y si {uid} va primero se traga "me" como si fuera un id y responde 404.
+@app.get("/api/users/me", dependencies=[Depends(require_auth)])
+def user_me(claims: dict = Depends(require_auth)):
+    """Quién soy, según el token. El front lo usa para saber a quién NO debe dejar borrarse
+    y para leer `mustChangePassword` al entrar."""
+    uid = claims.get("uid")
+    if not uid:
+        # Token de X-API-Key: no representa a una persona.
+        raise HTTPException(400, "This token is not tied to a user (X-API-Key has no identity).")
+    return _one_user(uid)
+
+
+@app.post("/api/users/me/password", dependencies=[Depends(require_auth)])
+def user_change_own_password(body: UserOwnPassword, claims: dict = Depends(require_auth)):
+    """Cambio de la PROPIA contraseña, verificando la actual.
+
+    Es el endpoint que cierra el ciclo del restablecimiento: el usuario entra con la temporal
+    y cambia aquí. No requiere ser admin — y a propósito NO permite cambiar la de otro.
+    """
+    uid = claims.get("uid")
+    if not uid:
+        raise HTTPException(400, "This token is not tied to a user (X-API-Key has no identity).")
+    rows = _q("SELECT password_hash FROM users WHERE id=%s AND deleted_at IS NULL", (uid,))
+    if not rows:
+        raise HTTPException(404, "user not found")
+    if not _verify_password(body.currentPassword or "", rows[0]["password_hash"]):
+        raise HTTPException(401, "Current password is incorrect.")
+    _check_password_strength(body.newPassword or "")
+    if body.newPassword == body.currentPassword:
+        raise HTTPException(422, "The new password must be different from the current one.")
+    _exec("UPDATE users SET password_hash=%s, must_change_password=0, updated_at=NOW() "
+          "WHERE id=%s", (_hash_password(body.newPassword), uid))
+    return {"ok": True, "mustChangePassword": False}
+
+
 @app.get("/api/users/{uid}", dependencies=[Depends(require_auth)])
 def user_get(uid: str):
     return _one_user(uid)
 
 
 @app.patch("/api/users/{uid}", dependencies=[Depends(require_auth)])
-def user_update(uid: str, body: UserUpdate):
-    if not _q("SELECT id FROM users WHERE id=%s AND deleted_at IS NULL", (uid,)):
+def user_update(uid: str, body: UserUpdate, claims: dict = Depends(require_auth)):
+    actual = _q("SELECT id, role FROM users WHERE id=%s AND deleted_at IS NULL", (uid,))
+    if not actual:
         raise HTTPException(404, "user not found")
+    rol_actual = actual[0]["role"]
+    soy_yo = claims.get("uid") == uid
+    # Quitarle el super_admin al ultimo, suspenderlo o dejarlo sin tablero deja el sistema
+    # sin quien administre. Mismo motivo que en el borrado.
+    if (body.role is not None and body.role != rol_actual) \
+       or (body.status is not None and body.status != "active") \
+       or body.dashboardAccess is False:
+        _guard_last_super_admin(uid, rol_actual)
+    if soy_yo and body.dashboardAccess is False:
+        raise HTTPException(409, "You cannot remove your own dashboard access.")
+    if soy_yo and body.status is not None and body.status != "active":
+        raise HTTPException(409, "You cannot deactivate your own user.")
     sets, args = [], []
     if body.name is not None:
         sets.append("full_name=%s"); args.append(body.name.strip())
@@ -2026,23 +2157,55 @@ def user_update(uid: str, body: UserUpdate):
 
 @app.post("/api/users/{uid}/password", dependencies=[Depends(require_auth)])
 def user_set_password(uid: str, body: UserPassword):
-    """Fija la contraseña del usuario. Siempre la guarda con PBKDF2, así que además
-    reemplaza los hashes SHA-256 heredados de METRICS_USERS."""
+    """Fija la contraseña del usuario (la elige el admin). Siempre la guarda con PBKDF2,
+    así que de paso reemplaza los hashes SHA-256 heredados de METRICS_USERS.
+
+    Limpia `must_change_password`: si un admin le pone una clave definitiva, ya no hay
+    nada que forzar.
+    """
     if not _q("SELECT id FROM users WHERE id=%s AND deleted_at IS NULL", (uid,)):
         raise HTTPException(404, "user not found")
-    if len(body.password or "") < 8:
-        raise HTTPException(422, "password must be at least 8 characters")
-    _exec("UPDATE users SET password_hash=%s, updated_at=NOW() WHERE id=%s",
-          (_hash_password(body.password), uid))
-    return {"ok": True, "id": uid}
+    _check_password_strength(body.password or "")
+    _exec("UPDATE users SET password_hash=%s, must_change_password=0, updated_at=NOW() "
+          "WHERE id=%s", (_hash_password(body.password), uid))
+    return {"ok": True, "id": uid, "mustChangePassword": False}
+
+
+@app.post("/api/users/{uid}/password/reset", dependencies=[Depends(require_auth)])
+def user_reset_password(uid: str):
+    """RESTABLECE la clave: el API genera una temporal, la devuelve **una sola vez** y marca
+    la cuenta para que el front obligue a cambiarla al entrar.
+
+    Existe para que un admin no tenga que inventarse una contraseña (y casi siempre elegir
+    una débil). La respuesta es lo único que verá: no se guarda en claro en ningún lado.
+    """
+    rows = _q("SELECT id, email, full_name FROM users WHERE id=%s AND deleted_at IS NULL", (uid,))
+    if not rows:
+        raise HTTPException(404, "user not found")
+    temp = _temp_password()
+    _exec("UPDATE users SET password_hash=%s, must_change_password=1, updated_at=NOW() "
+          "WHERE id=%s", (_hash_password(temp), uid))
+    return {
+        "ok": True, "id": uid, "email": rows[0]["email"],
+        "temporaryPassword": temp,          # ← única vez que se ve; no se puede recuperar
+        "mustChangePassword": True,
+    }
 
 
 @app.delete("/api/users/{uid}", dependencies=[Depends(require_auth)])
-def user_delete(uid: str):
+def user_delete(uid: str, claims: dict = Depends(require_auth)):
     """Borrado suave: desactiva y le quita el acceso al tablero. Conserva la trazabilidad
-    (p. ej. las sesiones que ese médico auditó siguen apuntando a él)."""
-    if not _q("SELECT id FROM users WHERE id=%s AND deleted_at IS NULL", (uid,)):
+    (p. ej. las sesiones que ese médico auditó siguen apuntando a él).
+
+    Dos salvaguardas, porque las dos dejan el sistema inutilizable y no tienen deshacer
+    desde la interfaz: no puedes borrarte a ti mismo, ni borrar al último super_admin.
+    """
+    rows = _q("SELECT id, role FROM users WHERE id=%s AND deleted_at IS NULL", (uid,))
+    if not rows:
         raise HTTPException(404, "user not found")
+    if claims.get("uid") == uid:
+        raise HTTPException(409, "You cannot delete your own user.")
+    _guard_last_super_admin(uid, rows[0]["role"])
     _exec("UPDATE users SET deleted_at=NOW(), is_active=0, status='inactive', "
           "dashboard_access=0, updated_at=NOW() WHERE id=%s", (uid,))
     return {"deleted": True, "id": uid}

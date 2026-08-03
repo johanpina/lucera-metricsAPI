@@ -720,7 +720,14 @@ GET /api/chats?guardian_id=3015d1d6-…</code></pre></div>
             encadena al final del vigente — pagar temprano no quita días. <b>Es de solo lectura</b>:
             no hay campo para editarla a mano; se cambia asignando el <code>plan</code>.</p></div></div>
 
-        <h3>Usuarios del tablero · CRUD completo</h3>
+        <h3 id="cuentas-usuarios">Usuarios del tablero · pestaña <b>Cuentas</b></h3>
+        <div class="adm"><div class="t">★ Ojo con el nombre: hay DOS cosas llamadas «cuentas»</div><div class="c">
+          <div class="tw"><table>
+            <tr><th>Pestaña</th><th>Endpoint</th><th>Qué lista</th></tr>
+            <tr><td><b>Cuentas</b> (operadores)</td><td><code>GET /api/users</code></td><td>Admins, médicos, ventas, auditores… <b>todo lo que NO es acudiente ni paciente.</b> Es la que se describe aquí abajo.</td></tr>
+            <tr><td>Familias</td><td><code>GET /api/accounts</code></td><td>Una fila por familia (acudiente + hijos + plan). <b>Sigue existiendo y no cambió.</b></td></tr>
+          </table></div>
+          <p>Los dos endpoints conviven a propósito. Si la pestaña Cuentas del tablero debe mostrar operadores, apúntala a <code>/api/users</code> — no a <code>/api/accounts</code>.</p></div></div>
         <div class="adm"><div class="t">✅ Los usuarios ya viven en la base de datos</div><div class="c">
           <p>Antes los operadores del tablero estaban en la variable de entorno
             <code>METRICS_USERS</code>. Ahora están en la tabla <code>users</code> y
@@ -740,6 +747,7 @@ GET /api/chats?guardian_id=3015d1d6-…</code></pre></div>
   <span class="tk">"status"</span>:<span class="ts">"active"</span>, <span class="tk">"isActive"</span>:true,
   <span class="tk">"dashboardAccess"</span>:true,     <span class="tc">// ¿puede entrar al tablero?</span>
   <span class="tk">"hasPassword"</span>:true,         <span class="tc">// false = creado sin clave, aún no puede entrar</span>
+  <span class="tk">"mustChangePassword"</span>:false, <span class="tc">// ★ true tras un RESET: hay que forzar el cambio</span>
   <span class="tk">"licenseId"</span>:<span class="ts">"…"</span>, <span class="tk">"specialty"</span>:<span class="ts">"Pediatría"</span>, <span class="tk">"createdAt"</span>:<span class="ts">"…"</span>
 } ] }</code></pre></div>
         <p style="font-size:14px"><code>?dashboard_only=true</code> devuelve <b>quién puede entrar</b>
@@ -749,6 +757,10 @@ GET /api/chats?guardian_id=3015d1d6-…</code></pre></div>
         <div class="ep-h" style="margin-top:.7em"><span class="m get">get</span><span class="path">/api/users/{id}</span></div>
         <div class="ep-h" style="margin-top:.7em"><span class="m post" style="background:#d9822b">patch</span><span class="path">/api/users/{id}</span></div>
         <div class="ep-h" style="margin-top:.7em"><span class="m post">post</span><span class="path">/api/users/{id}/password</span></div>
+        <div class="ep-h" style="margin-top:.7em"><span class="m post">post</span><span class="path">/api/users/{id}/password/reset</span><span class="ret">★ → devuelve una clave temporal</span></div>
+        <div class="ep-h" style="margin-top:.7em"><span class="m get">get</span><span class="path">/api/users/me</span><span class="ret">★ quién soy</span></div>
+        <div class="ep-h" style="margin-top:.7em"><span class="m post">post</span><span class="path">/api/users/me/password</span><span class="ret">★ cambiar la propia, con la actual</span></div>
+        <div class="ep-h" style="margin-top:.7em"><span class="m get">get</span><span class="path">/api/roles</span><span class="ret">★ catálogo para el desplegable</span></div>
         <div class="ep-h" style="margin-top:.7em"><span class="m post" style="background:#b23b4a">del</span><span class="path">/api/users/{id}</span></div>
         <div class="single"><span class="cp" data-copy>Copiar</span><pre><code><span class="tc">// POST — name, email y role obligatorios. Sin password queda creado pero sin poder entrar.</span>
 { <span class="tk">"name"</span>:<span class="ts">"Dra. Elena Sánchez"</span>, <span class="tk">"email"</span>:<span class="ts">"esanchez@lucera.pa"</span>, <span class="tk">"role"</span>:<span class="ts">"doctor"</span>,
@@ -761,11 +773,55 @@ GET /api/chats?guardian_id=3015d1d6-…</code></pre></div>
   <span class="tk">"status"</span>:<span class="ts">"suspended"</span>,        <span class="tc">// active|suspended|inactive · suspendido NO puede entrar</span>
   <span class="tk">"dashboardAccess"</span>:false }    <span class="tc">// quitar acceso sin borrar el usuario</span>
 
-<span class="tc">// POST /password — mínimo 8 caracteres. Siempre guarda con PBKDF2.</span>
+<span class="tc">// POST /{id}/password — el admin ELIGE la clave. Mínimo 8. Siempre PBKDF2.</span>
 { <span class="tk">"password"</span>:<span class="ts">"NuevaClave456"</span> }
+<span class="tc">// 422 si es corta o si es una de las obvias (password, 12345678, lucera123…)</span>
+
+<span class="tc">// ★ POST /{id}/password/reset — sin cuerpo. El API GENERA la temporal:</span>
+{ <span class="tk">"ok"</span>:true, <span class="tk">"id"</span>:<span class="ts">"…"</span>, <span class="tk">"email"</span>:<span class="ts">"esanchez@lucera.pa"</span>,
+  <span class="tk">"temporaryPassword"</span>:<span class="ts">"KZb5T8wR7uYR"</span>,   <span class="tc">// ← ÚNICA vez que se ve. No se puede recuperar.</span>
+  <span class="tk">"mustChangePassword"</span>:true }
+
+<span class="tc">// ★ POST /me/password — el propio usuario, verificando la actual</span>
+{ <span class="tk">"currentPassword"</span>:<span class="ts">"KZb5T8wR7uYR"</span>, <span class="tk">"newPassword"</span>:<span class="ts">"MiClaveDefinitiva"</span> }
+<span class="tc">// 401 si la actual está mal · 422 si la nueva es igual a la actual</span>
+
+<span class="tc">// ★ GET /api/roles → para llenar el desplegable sin hardcodear</span>
+{ <span class="tk">"items"</span>:[ { <span class="tk">"value"</span>:<span class="ts">"doctor"</span>, <span class="tk">"label"</span>:<span class="ts">"Médico"</span>, <span class="tk">"dashboardRole"</span>:<span class="ts">"Doctor"</span> }, … ] }
 
 <span class="tc">// DELETE es borrado suave: desactiva y quita el acceso, pero conserva la trazabilidad</span>
 <span class="tc">// (las sesiones que ese médico auditó siguen apuntando a él). → { "deleted": true, "id": "…" }</span></code></pre></div>
+
+        <div class="adm"><div class="t">★ Flujo de contraseñas — los tres caminos</div><div class="c">
+          <div class="tw"><table>
+            <tr><th>Situación</th><th>Endpoint</th><th>Quién la elige</th></tr>
+            <tr><td>Alta de una persona nueva</td><td><code>POST /api/users</code> con <code>password</code></td><td>el admin</td></tr>
+            <tr><td>El admin le pone una clave concreta</td><td><code>POST /api/users/{id}/password</code></td><td>el admin</td></tr>
+            <tr><td><b>Se le olvidó / hay que restablecer</b></td><td><code>POST /api/users/{id}/password/reset</code></td><td><b>la genera el API</b></td></tr>
+            <tr><td>El usuario cambia la suya</td><td><code>POST /api/users/me/password</code></td><td>el propio usuario</td></tr>
+          </table></div>
+          <p><b>Lo que hay que implementar en la interfaz:</b> tras un <code>reset</code>, la respuesta
+          trae <code>temporaryPassword</code> <b>una sola vez</b> — muéstrala en un diálogo para
+          copiarla, porque no hay forma de volver a verla. Esa cuenta queda con
+          <code>mustChangePassword: true</code>, que también llega en el <code>user</code> de
+          <code>/auth/login</code>: cuando venga en <code>true</code>, manda al usuario a cambiar la
+          clave antes de dejarlo usar el tablero.</p>
+          <p>La temporal se genera sin caracteres que se confundan al dictarla (nada de
+          <code>0/O</code> ni <code>1/l/I</code>), pensando en que se pasa por teléfono o chat.</p>
+        </div></div>
+
+        <div class="adm"><div class="t">★ Salvaguardas — errores que verás y qué significan</div><div class="c">
+          <div class="tw"><table>
+            <tr><th>Código</th><th>Cuándo</th><th>Por qué</th></tr>
+            <tr><td><code>409</code></td><td>Borrar tu propio usuario</td><td>Te dejaría fuera sin poder volver.</td></tr>
+            <tr><td><code>409</code></td><td>Quitarte tu propio <code>dashboardAccess</code></td><td>Igual: no hay deshacer desde la interfaz.</td></tr>
+            <tr><td><code>409</code></td><td>Desactivarte a ti mismo</td><td>Igual.</td></tr>
+            <tr><td><code>409</code></td><td>Borrar, suspender o bajarle el rol al <b>último <code>super_admin</code> activo</b></td><td>Nadie podría volver a crear usuarios; habría que arreglarlo por SQL a mano.</td></tr>
+            <tr><td><code>409</code></td><td>Correo o teléfono ya usados</td><td>Ambos son únicos en la base.</td></tr>
+            <tr><td><code>422</code></td><td>Rol fuera del catálogo, o <code>guardian</code></td><td>Los acudientes se crean por el registro del bot, no por aquí.</td></tr>
+          </table></div>
+          <p>Todas devuelven el motivo en <code>detail</code>, listo para mostrarse tal cual.</p>
+        </div></div>
 
         <div class="tw"><table>
           <tr><th>Rol en la base</th><th><code>dashboardRole</code></th></tr>
