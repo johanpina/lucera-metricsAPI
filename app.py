@@ -477,6 +477,9 @@ def _split(txt: str | None) -> list[str]:
 def _child(d: dict) -> dict:
     return {
         "id": d["id"], "name": d["name"], "birthDate": _clean(d["birthday"]),
+        # Cédula del PACIENTE. Ya venía en /api/patients; faltaba aquí, así que el mismo hijo
+        # salía con campos distintos según el endpoint.
+        "idNumber": d.get("id_number"), "school": d.get("school"),
         "bloodType": BLOOD_OUT.get(d.get("blood_type"), None),
         "weightKg": float(d["weight_kg"]) if d.get("weight_kg") is not None else None,
         "conditions": _split(d.get("known_conditions")), "allergies": _split(d.get("allergies")),
@@ -507,7 +510,7 @@ def _children_for(gids: list[str]) -> dict:
     deps = _q(
         f"""SELECT gd.guardian_id, d.id, d.full_name AS name, d.birthday, d.blood_type, d.weight_kg,
                d.known_conditions, d.allergies, d.insurance_company_id AS ins_id, ic.name AS ins_name,
-               d.policy_number AS policy
+               d.policy_number AS policy, d.id_number, d.school
             FROM dependents d JOIN guardian_dependent gd ON gd.dependent_id=d.id
             LEFT JOIN insurance_companies ic ON ic.id=d.insurance_company_id
             WHERE gd.guardian_id IN ({ph})""",
@@ -540,6 +543,9 @@ def _guardian_row(g: dict, kids: list[dict]) -> dict:
     return {
         "id": g["id"], "phone": g["phone"], "email": g["email"], "name": g["name"],
         "accountCode": g.get("account_code"), "gender": g.get("gender"),
+        # Cedula del ACUDIENTE. Distinta de accountCode (la genera Lucera) y de la
+        # idNumber de cada hijo, que es la del paciente.
+        "idNumber": g.get("id_number"),
         "relationship": REL_OUT.get(g["rel"], "guardian"),
         "country": g.get("country") or _country(g["phone"]),   # nativo; fallback al prefijo del teléfono
         "province": g.get("province") or "", "address": g.get("address"),
@@ -556,7 +562,7 @@ def _guardian_row(g: dict, kids: list[dict]) -> dict:
 
 
 _G_SELECT = """SELECT g.id, g.full_name AS name, g.relationship_type AS rel, g.country, g.city, g.province,
-    g.account_code, g.gender, g.address,
+    g.account_code, g.gender, g.address, g.id_number,
     g.insurance_company_id AS ins_id, ic.name AS ins_name, g.policy_number AS policy,
     u.phone_number AS phone, u.email, u.status AS ustatus, u.created_at,
     u.subscription_expires_at AS expires_at,
@@ -647,6 +653,7 @@ class GuardianCreate(BaseModel):
     plan: str | None = None          # free|premium_monthly|premium_annual
     insuranceId: int | None = None   # seguro del acudiente (guardians.insurance_company_id)
     policyNumber: str | None = None
+    idNumber: str | None = None      # cedula del acudiente
 
 
 @app.post("/api/guardians", dependencies=[Depends(require_auth)], status_code=201)
@@ -660,10 +667,10 @@ def guardian_create(body: GuardianCreate):
              VALUES (%s,%s,%s,%s,'guardian',%s,%s,NOW(),NOW())""",
          (uid, body.email.strip().lower(), phone, "!dashboard-created", status, 0 if status != "active" else 1)),
         ("""INSERT INTO guardians (id, user_id, full_name, relationship_type, address, country, city, province,
-             insurance_company_id, policy_number, created_at)
-             VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,NOW())""",
+             insurance_company_id, policy_number, id_number, created_at)
+             VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,NOW())""",
          (gid, uid, body.name.strip(), rel, body.address, body.country, body.city, body.province,
-          body.insuranceId, body.policyNumber)),
+          body.insuranceId, body.policyNumber, (body.idNumber or "").strip() or None)),
     ]))
     _apply_plan(uid, body.plan)
     return _one_guardian(gid)
@@ -681,6 +688,7 @@ class GuardianUpdate(BaseModel):
     city: str | None = None
     province: str | None = None
     address: str | None = None       # dirección del acudiente
+    idNumber: str | None = None      # cedula del acudiente
     gender: str | None = None        # femenino|masculino|otro|prefiere_no_decir
     relationship: str | None = None
     status: str | None = None
@@ -719,6 +727,8 @@ def guardian_update(gid: str, body: GuardianUpdate):
         gsets.append("gender=%s"); gargs.append(body.gender)
     if body.policyNumber is not None:
         gsets.append("policy_number=%s"); gargs.append(body.policyNumber or None)
+    if body.idNumber is not None:
+        gsets.append("id_number=%s"); gargs.append(body.idNumber.strip() or None)
     if gsets:
         _guard_integrity(lambda: _exec(f"UPDATE guardians SET {', '.join(gsets)} WHERE id=%s", tuple(gargs + [gid])))
     usets, uargs = [], []
@@ -1833,7 +1843,7 @@ def accounts(page: int = 1, page_limit: int = 20, q: str | None = None):
     rows = _q(
         f"""SELECT g.id, g.account_code, g.full_name, g.gender, g.country, g.province, g.city,
                    g.address, u.phone_number, u.email, u.status, u.created_at, ic.name AS insurance,
-                   u.subscription_expires_at AS expires_at,
+                   u.subscription_expires_at AS expires_at, g.id_number,
                    (SELECT COUNT(*) FROM guardian_dependent gd WHERE gd.guardian_id=g.id) children,
                    (SELECT COUNT(*) FROM chat_sessions cs WHERE cs.guardian_id=g.id) chats,
                    (SELECT p.status FROM payments p WHERE p.user_id=u.id
@@ -1848,6 +1858,7 @@ def accounts(page: int = 1, page_limit: int = 20, q: str | None = None):
     )
     items = [{
         "id": r["id"], "accountCode": r["account_code"], "guardian": r["full_name"],
+        "idNumber": r["id_number"],   # cedula del acudiente
         "gender": r["gender"], "phone": r["phone_number"], "email": r["email"],
         "country": r["country"], "province": r["province"], "city": r["city"], "address": r["address"],
         "insurance": r["insurance"], "status": r["status"], "plan": r["plan"] or "free",

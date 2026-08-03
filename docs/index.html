@@ -339,6 +339,7 @@ GET /api/portal-links?only_missing=true
 {
   <span class="tk">"id"</span>:<span class="ts">"3015d1d6-…"</span>, <span class="tk">"phone"</span>:<span class="ts">"50762342370"</span>, <span class="tk">"email"</span>:<span class="ts">"ana.muschett@…"</span>,
   <span class="tk">"accountCode"</span>:<span class="ts">"LUC-000002"</span>,  <span class="tc">// ★ ID legible de la CUENTA (familia)</span>
+  <span class="tk">"idNumber"</span>:<span class="ts">"8-123-4567"</span>,   <span class="tc">// ★ CÉDULA DEL ACUDIENTE · null si no la dio</span>
   <span class="tk">"name"</span>:<span class="ts">"Ana Muschett"</span>, <span class="tk">"relationship"</span>:<span class="ts">"mother"</span>,   <span class="tc">// mother|father|guardian|grandparent</span>
   <span class="tk">"gender"</span>:<span class="ts">"femenino"</span>,      <span class="tc">// ★ femenino|masculino|otro|prefiere_no_decir · null si no lo dijo</span>
   <span class="tk">"country"</span>:<span class="ts">"Panamá"</span>, <span class="tk">"province"</span>:<span class="ts">"Panamá Oeste"</span>, <span class="tk">"city"</span>:<span class="ts">"Arraiján"</span>,
@@ -351,6 +352,7 @@ GET /api/portal-links?only_missing=true
   <span class="tk">"insurance"</span>:{ <span class="tk">"id"</span>:<span class="tn">10</span>, <span class="tk">"name"</span>:<span class="ts">"Acerta"</span>, <span class="tk">"policyNumber"</span>:<span class="ts">"POL-123"</span> },  <span class="tc">// o null si ningún hijo tiene seguro</span>
   <span class="tk">"registeredAt"</span>:<span class="ts">"2026-07-01 07:04"</span>,
   <span class="tk">"children"</span>:[ { <span class="tk">"id"</span>:<span class="ts">"…"</span>, <span class="tk">"name"</span>:<span class="ts">"Lucas Muschett"</span>, <span class="tk">"birthDate"</span>:<span class="ts">"2022-04-05"</span>,
+      <span class="tk">"idNumber"</span>:<span class="ts">"8-999-111"</span>, <span class="tk">"school"</span>:<span class="ts">"Colegio Javier"</span>,  <span class="tc">// ★ cédula del PACIENTE</span>
       <span class="tk">"bloodType"</span>:null, <span class="tk">"weightKg"</span>:<span class="tn">16.5</span>, <span class="tk">"conditions"</span>:[], <span class="tk">"allergies"</span>:[<span class="ts">"Maní"</span>],
       <span class="tk">"insurance"</span>:{ <span class="tk">"id"</span>:<span class="tn">10</span>, <span class="tk">"name"</span>:<span class="ts">"Acerta"</span>, <span class="tk">"policyNumber"</span>:<span class="ts">"POL-123"</span> } } ]
 }</code></pre></div>
@@ -381,7 +383,8 @@ GET /api/portal-links?only_missing=true
           <li><b>country</b>: editable y persistente (columna del acudiente). En acudientes antiguos sin país se infiere del prefijo del teléfono (507→Panamá, 57→Colombia).</li>
           <li><b>plan</b>: no es una columna; se materializa como un pago confirmado. <code>premium_*</code> registra el pago; <code>free</code> anula los pagos confirmados previos.</li>
           <li><b>insuranceId · policyNumber</b>: el seguro es del <b>acudiente</b> (lo natural: la póliza suele ser del padre). Se guarda al crear, sin depender de pacientes. Envía <code>insuranceId:0</code> para quitarlo. Cada paciente conserva además su propio seguro opcional.</li>
-          <li><b>★ accountCode</b>: identifica la <b>cuenta/familia</b> (<code>LUC-000042</code>). Se asigna solo al registrarse y es de <b>solo lectura</b>. No lo confundas con <code>idNumber</code> de <code>/api/patients</code>, que es la <b>cédula del paciente</b>: son cosas distintas.</li>
+          <li><b>★ accountCode</b>: identifica la <b>cuenta/familia</b> (<code>LUC-000042</code>). Lo genera Lucera, se asigna solo al registrarse y es de <b>solo lectura</b>.</li>
+          <li><b>★ idNumber</b>: la <b>cédula del acudiente</b> — la persona que contrata. Se pide en el formulario de registro y es editable por <code>PATCH</code>. <code>null</code> en las cuentas anteriores a agosto 2026.</li>
           <li><b>★ gender · address · province</b>: se capturan en el formulario de registro y son editables por <code>PATCH</code>. En cuentas creadas antes de julio 2026 vienen <code>null</code>.</li>
           <li><b>★ chats</b>: número de consultas de la cuenta. Calculado, de solo lectura.</li>
         </ul></div></div>
@@ -681,6 +684,7 @@ GET /api/chats?guardian_id=3015d1d6-…</code></pre></div>
           <span class="ret">· <code>?page=&amp;page_limit=&amp;q=</code> · envelope paginado</span></div>
         <div class="single"><span class="cp" data-copy>Copiar</span><pre><code>{ <span class="tk">"items"</span>:[ {
   <span class="tk">"id"</span>:<span class="ts">"…"</span>, <span class="tk">"accountCode"</span>:<span class="ts">"LUC-000042"</span>,   <span class="tc">// ID legible, se asigna al registrarse</span>
+  <span class="tk">"idNumber"</span>:<span class="ts">"8-123-4567"</span>,   <span class="tc">// ★ cédula del acudiente</span>
   <span class="tk">"guardian"</span>:<span class="ts">"Ana Muschett"</span>, <span class="tk">"gender"</span>:<span class="ts">"femenino"</span>, <span class="tk">"phone"</span>:<span class="ts">"507…"</span>, <span class="tk">"email"</span>:<span class="ts">"…"</span>,
   <span class="tk">"country"</span>:<span class="ts">"Panamá"</span>, <span class="tk">"province"</span>:<span class="ts">"Panamá Oeste"</span>, <span class="tk">"city"</span>:<span class="ts">"Arraiján"</span>, <span class="tk">"address"</span>:<span class="ts">"…"</span>,
   <span class="tk">"insurance"</span>:<span class="ts">"ASSA"</span>, <span class="tk">"status"</span>:<span class="ts">"active"</span>, <span class="tk">"plan"</span>:<span class="ts">"1_hijo"</span>, <span class="tk">"paymentStatus"</span>:<span class="ts">"confirmed"</span>,
@@ -688,9 +692,16 @@ GET /api/chats?guardian_id=3015d1d6-…</code></pre></div>
   <span class="tk">"subscriptionExpiresAt"</span>:<span class="ts">"2026-09-03 04:50"</span>,  <span class="tc">// ★ null = SIN vencimiento</span>
   <span class="tk">"subscriptionState"</span>:<span class="ts">"active"</span>    <span class="tc">// ★ active|expired|none</span>
 } ], <span class="tk">"page"</span>:<span class="tn">1</span>, <span class="tk">"total"</span>:<span class="tn">42</span> }</code></pre></div>
-        <p style="font-size:14px;color:var(--muted)"><code>q</code> busca por nombre, código de cuenta o teléfono.
-          <b>Ojo:</b> <code>accountCode</code> identifica la <b>cuenta/familia</b>;
-          la <b>cédula del paciente</b> es <code>idNumber</code> en <code>/api/patients</code> — son cosas distintas.</p>
+        <p style="font-size:14px;color:var(--muted)"><code>q</code> busca por nombre, código de cuenta o teléfono.</p>
+
+        <div class="adm"><div class="t">★ Tres identificadores que se confunden fácil</div><div class="c">
+          <div class="tw"><table>
+            <tr><th>Campo</th><th>De quién</th><th>Quién lo emite</th><th>Dónde viene</th></tr>
+            <tr><td><code>accountCode</code></td><td>la cuenta / familia</td><td><b>Lucera</b> (<code>LUC-000042</code>)</td><td><code>/api/guardians</code> · <code>/api/accounts</code> · <code>/api/patients</code></td></tr>
+            <tr><td><code>idNumber</code> del guardian</td><td>el <b>acudiente</b></td><td>el Estado (cédula)</td><td><code>/api/guardians</code> · <code>/api/accounts</code></td></tr>
+            <tr><td><code>idNumber</code> del hijo</td><td>el <b>paciente</b></td><td>el Estado (cédula)</td><td><code>/api/patients</code> · <code>children[]</code> de <code>/api/guardians</code></td></tr>
+          </table></div>
+          <p>Los dos <code>idNumber</code> se llaman igual pero viven en objetos distintos: uno cuelga del acudiente y el otro de cada hijo. Ambos son <code>null</code> mientras nadie los cargue.</p></div></div>
 
         <div class="adm"><div class="t">★ Vigencia de la suscripción — cómo pintarla</div><div class="c">
           <p><code>subscriptionExpiresAt</code> dice hasta cuándo está paga la cuenta. Viene también
