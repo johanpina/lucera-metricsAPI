@@ -2448,6 +2448,10 @@ def _clinical_history_data(pid: str) -> dict:
     pat = _q(
         """SELECT d.*, g.id AS gid, g.full_name AS guardian, g.account_code, g.address,
                   g.country, g.province, g.city, g.relationship_type,
+                  -- CON ALIAS a proposito: `d.*` ya trae d.id_number (la cedula del PACIENTE).
+                  -- Sin alias, g.id_number la pisaria y el PDF mostraria la del acudiente
+                  -- en el campo del paciente.
+                  g.id_number AS guardian_id_number,
                   u.phone_number, ic.name AS insurance, d.policy_number
            FROM dependents d
            JOIN guardian_dependent gd ON gd.dependent_id = d.id
@@ -2586,6 +2590,7 @@ def _build_clinical_pdf(data: dict) -> bytes:
     el.append(Paragraph("Acudiente responsable", st["h2"]))
     el.append(_kv_block([
         ("Nombre", p.get("guardian") or "—"),
+        ("Cédula", p.get("guardian_id_number") or "—"),
         ("Parentesco", _REL_ES.get(p.get("relationship_type"), "—")),
         ("Teléfono", p.get("phone_number") or "—"),
         ("Cuenta", p.get("account_code") or "—"),
