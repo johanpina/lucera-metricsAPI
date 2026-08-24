@@ -749,7 +749,34 @@ GET /api/chats?guardian_id=3015d1d6-…</code></pre></div>
             encadena al final del vigente — pagar temprano no quita días. <b>Es de solo lectura</b>:
             no hay campo para editarla a mano; se cambia asignando el <code>plan</code>.</p></div></div>
 
-        <div class="adm"><div class="t">★ Contraseñas del ACUDIENTE — no van por /api/users</div><div class="c">
+        <div class="adm"><div class="t">★ Contraseñas del ACUDIENTE — ciclo completo</div><div class="c">
+          <div class="tw"><table>
+            <tr><th>Situación</th><th>Endpoint</th><th>Quién elige la clave</th></tr>
+            <tr><td><b>Crear acudiente</b> desde el tablero</td><td><code>POST /api/guardians</code></td><td><b>la genera el API</b> → <code>initialPassword</code></td></tr>
+            <tr><td>El admin le pone una concreta</td><td><code>POST /api/guardians/{id}/portal-password</code></td><td>el admin</td></tr>
+            <tr><td><b>Se le olvidó / restablecer</b></td><td><code>POST /api/guardians/{id}/portal-password/reset</code></td><td><b>la genera el API</b></td></tr>
+            <tr><td>El acudiente cambia la suya</td><td><code>POST /portal/password</code></td><td>el acudiente</td></tr>
+            <tr><td>Que la fije él por enlace</td><td><code>portal-link</code> → <code>POST /portal/register</code></td><td>el acudiente</td></tr>
+          </table></div>
+          <div class="single"><span class="cp" data-copy>Copiar</span><pre><code><span class="tc">// POST /api/guardians — sin `password` la genera sola</span>
+{ <span class="tk">"name"</span>:<span class="ts">"Ana Muschett"</span>, <span class="tk">"phone"</span>:<span class="ts">"507…"</span>, <span class="tk">"email"</span>:<span class="ts">"…"</span>, <span class="tk">"idNumber"</span>:<span class="ts">"8-123-4567"</span> }
+<span class="tc">// → { …, "initialPassword":"VXJjt6XdBX3i", "mustChangePassword": true }</span>
+<span class="tc">//   initialPassword viene SOLO aquí. Muéstrala para copiar/enviar: no se recupera.</span>
+<span class="tc">//   Manda "password" si prefieres elegirla tú · "generatePassword": false para no crear ninguna</span>
+
+<span class="tc">// POST /api/guardians/{id}/portal-password/reset — sin cuerpo</span>
+<span class="tc">// → { "temporaryPassword":"g9k7iyRXGKhf", "name":"…", "phone":"…", "mustChangePassword": true }</span>
+
+<span class="tc">// POST /portal/password — el acudiente, con su token de portal</span>
+{ <span class="tk">"currentPassword"</span>:<span class="ts">"VXJjt6XdBX3i"</span>, <span class="tk">"newPassword"</span>:<span class="ts">"…"</span> }
+<span class="tc">// → devuelve access_token y refresh_token NUEVOS: reemplázalos o sigue el 403</span></code></pre></div>
+          <p><b>El bloqueo es del servidor, no del front.</b> Mientras <code>mustChangePassword</code>
+          siga en <code>true</code>, el token del portal lleva la marca y <b>todo responde 403</b>
+          salvo <code>GET /portal/me</code> y <code>POST /portal/password</code>. Se hizo así porque
+          esa clave la eligió o la generó un tercero, no el acudiente.</p>
+        </div></div>
+
+        <div class="adm"><div class="t">Y ojo: los acudientes NO salen en /api/users</div><div class="c">
           <p><code>GET /api/users</code> <b>excluye a los acudientes a propósito</b>
           (<code>u.role &lt;&gt; 'guardian'</code>): esa pestaña es de operadores. Los acudientes
           se listan en <code>/api/guardians</code> y tienen sus propios endpoints:</p>

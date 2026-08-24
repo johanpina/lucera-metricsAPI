@@ -280,7 +280,12 @@ def require_auth(
     raise HTTPException(status_code=401, detail="Not authenticated (send Bearer <access_token> or X-API-Key).")
 
 
-def require_guardian(authorization: str | None = Header(default=None)) -> str:
+# Rutas del portal disponibles con la clave inicial sin cambiar: ver el perfil propio y
+# cambiar la contrasena. Cualquier otra responde 403 hasta que la cambie.
+_PORTAL_PWD_EXEMPT = frozenset({"/portal/me", "/portal/password"})
+
+
+def require_guardian(request: Request, authorization: str | None = Header(default=None)) -> str:
     """Auth del PORTAL DEL ACUDIENTE. Devuelve el id del acudiente (gid) del token."""
     if not (authorization and authorization.lower().startswith("bearer ")):
         raise HTTPException(status_code=401, detail="Not authenticated (guardian Bearer token required).")
@@ -293,6 +298,13 @@ def require_guardian(authorization: str | None = Header(default=None)) -> str:
         raise HTTPException(status_code=401, detail="Invalid token.")
     if claims.get("typ") == "refresh" or claims.get("scope") != "portal" or not claims.get("gid"):
         raise HTTPException(status_code=403, detail="Not a guardian portal token.")
+    # Clave inicial o restablecida sin cambiar: solo puede ver su perfil y cambiarla. El
+    # aviso no basta -- la clave la eligio o la genero un tercero, no el acudiente.
+    if claims.get("mcp") and request.url.path not in _PORTAL_PWD_EXEMPT:
+        raise HTTPException(
+            status_code=403,
+            detail="Password change required. Call POST /portal/password before using the portal.",
+        )
     return claims["gid"]
 
 
@@ -364,7 +376,8 @@ def guardian_login(body: GuardianLoginIn) -> dict:
     else:
         campo, valor = "u.phone_number", _digits(ident)
     rows = _q(
-        f"""SELECT g.id AS gid, g.full_name AS name, u.password_hash AS ph, u.status AS ustatus
+        f"""SELECT g.id AS gid, g.full_name AS name, u.password_hash AS ph, u.status AS ustatus,
+                  u.must_change_password AS mcp
            FROM guardians g JOIN users u ON u.id=g.user_id
            WHERE {campo}=%s AND u.deleted_at IS NULL""",
         (valor,),
@@ -375,11 +388,15 @@ def guardian_login(body: GuardianLoginIn) -> dict:
     if rows[0]["ustatus"] != "active":
         raise HTTPException(status_code=403, detail="Account is not active.")
     g = rows[0]
+    mcp = bool(g.get("mcp"))
     return {
-        "access_token": _make_token(g["gid"], g["name"], "Guardian", "access", ACCESS_TTL, scope="portal", gid=g["gid"]),
-        "refresh_token": _make_token(g["gid"], g["name"], "Guardian", "refresh", REFRESH_TTL, scope="portal", gid=g["gid"]),
+        "access_token": _make_token(g["gid"], g["name"], "Guardian", "access", ACCESS_TTL,
+                                    scope="portal", gid=g["gid"], mcp=mcp),
+        "refresh_token": _make_token(g["gid"], g["name"], "Guardian", "refresh", REFRESH_TTL,
+                                     scope="portal", gid=g["gid"], mcp=mcp),
         "token_type": "Bearer",
         "expires_in": ACCESS_TTL,
+        "mustChangePassword": mcp,
         "guardian": {"id": g["gid"], "name": g["name"]},
     }
 
@@ -740,18 +757,38 @@ class GuardianCreate(BaseModel):
     insuranceId: int | None = None   # seguro del acudiente (guardians.insurance_company_id)
     policyNumber: str | None = None
     idNumber: str | None = None      # cedula del acudiente
+    # Clave del PORTAL. Si no se manda, se genera una y se devuelve en `initialPassword`
+    # para que el admin se la comunique. En ambos casos queda marcada para cambiarla.
+    password: str | None = None      # la elige el admin
+    generatePassword: bool = True    # si no viene password, generarla (def. si)
 
 
 @app.post("/api/guardians", dependencies=[Depends(require_auth)], status_code=201)
 def guardian_create(body: GuardianCreate):
+    """Crea un acudiente desde el tablero, con su clave del portal.
+
+    Antes se guardaba un literal que no era un hash valido, asi que el acudiente quedaba
+    sin poder entrar y sin forma de enterarse. Ahora: se usa la clave que mande el admin o
+    se genera una, se devuelve UNA vez en `initialPassword`, y la cuenta queda marcada para
+    cambiarla en el primer ingreso.
+    """
     rel = REL_IN.get((body.relationship or "guardian").lower(), "tutor")
     status = STATUS_IN.get((body.status or "active").lower(), "active")
     phone = body.phone.strip().lstrip("+")
     uid, gid = str(uuid.uuid4()), str(uuid.uuid4())
+
+    clave = (body.password or "").strip() or (_temp_password() if body.generatePassword else "")
+    hash_inicial = ""
+    if clave:
+        _check_password_strength(clave)
+        hash_inicial = _hash_password(clave)
+
     _guard_integrity(lambda: _tx([
-        ("""INSERT INTO users (id, email, phone_number, password_hash, role, status, is_active, created_at, updated_at)
-             VALUES (%s,%s,%s,%s,'guardian',%s,%s,NOW(),NOW())""",
-         (uid, body.email.strip().lower(), phone, "!dashboard-created", status, 0 if status != "active" else 1)),
+        ("""INSERT INTO users (id, email, phone_number, password_hash, role, status, is_active,
+             must_change_password, created_at, updated_at)
+             VALUES (%s,%s,%s,%s,'guardian',%s,%s,%s,NOW(),NOW())""",
+         (uid, body.email.strip().lower(), phone, hash_inicial, status,
+          0 if status != "active" else 1, 1 if clave else 0)),
         ("""INSERT INTO guardians (id, user_id, full_name, relationship_type, address, country, city, province,
              insurance_company_id, policy_number, id_number, created_at)
              VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,NOW())""",
@@ -759,7 +796,12 @@ def guardian_create(body: GuardianCreate):
           body.insuranceId, body.policyNumber, (body.idNumber or "").strip() or None)),
     ]))
     _apply_plan(uid, body.plan, body.billingCycle)
-    return _one_guardian(gid)
+    creado = _one_guardian(gid)
+    if clave:
+        # UNICA vez que se ve: no queda en claro en ningun lado.
+        creado["initialPassword"] = clave
+        creado["mustChangePassword"] = True
+    return creado
 
 
 @app.get("/api/guardians/{gid}", dependencies=[Depends(require_auth)])
@@ -858,6 +900,54 @@ def guardian_set_portal_password(gid: str, body: PortalPassword):
     _exec("UPDATE users SET password_hash=%s, updated_at=NOW() WHERE id=%s",
           (_hash_password(body.password), g[0]["user_id"]))
     return {"ok": True, "id": gid}
+
+
+@app.post("/api/guardians/{gid}/portal-password/reset", dependencies=[Depends(require_auth)])
+def guardian_reset_portal_password(gid: str):
+    """RESTABLECE la clave del portal: el API genera una, la devuelve UNA vez y marca la
+    cuenta para que el acudiente la cambie al entrar.
+
+    Mismo criterio que para los operadores internos: el admin no deberia tener que
+    inventarse una contrasena, porque en la practica elige una debil.
+    """
+    g = _q("""SELECT g.user_id, g.full_name, u.id_number, u.phone_number
+              FROM guardians g JOIN users u ON u.id=g.user_id WHERE g.id=%s""", (gid,))
+    if not g:
+        raise HTTPException(status_code=404, detail="Guardian not found.")
+    temp = _temp_password()
+    _exec("UPDATE users SET password_hash=%s, must_change_password=1, updated_at=NOW() "
+          "WHERE id=%s", (_hash_password(temp), g[0]["user_id"]))
+    return {"ok": True, "id": gid, "name": g[0]["full_name"], "phone": g[0]["phone_number"],
+            "temporaryPassword": temp, "mustChangePassword": True}
+
+
+@app.post("/portal/password")
+def portal_change_own_password(body: UserOwnPassword, gid: str = Depends(require_guardian)):
+    """El ACUDIENTE cambia su propia clave, verificando la actual.
+
+    Cierra el ciclo del primer ingreso: entra con la temporal y la cambia aqui. Devuelve
+    tokens nuevos sin la marca; sin eso seguiria bloqueado con el token viejo.
+    """
+    rows = _q("""SELECT u.id, u.password_hash, g.full_name FROM guardians g
+                 JOIN users u ON u.id=g.user_id WHERE g.id=%s AND u.deleted_at IS NULL""", (gid,))
+    if not rows:
+        raise HTTPException(status_code=404, detail="Guardian not found.")
+    if not _verify_password(body.currentPassword or "", rows[0]["password_hash"]):
+        raise HTTPException(status_code=401, detail="Current password is incorrect.")
+    _check_password_strength(body.newPassword or "")
+    if body.newPassword == body.currentPassword:
+        raise HTTPException(status_code=422, detail="The new password must be different.")
+    _exec("UPDATE users SET password_hash=%s, must_change_password=0, updated_at=NOW() "
+          "WHERE id=%s", (_hash_password(body.newPassword), rows[0]["id"]))
+    nombre = rows[0]["full_name"]
+    return {
+        "ok": True, "mustChangePassword": False,
+        "access_token": _make_token(gid, nombre, "Guardian", "access", ACCESS_TTL,
+                                    scope="portal", gid=gid, mcp=False),
+        "refresh_token": _make_token(gid, nombre, "Guardian", "refresh", REFRESH_TTL,
+                                     scope="portal", gid=gid, mcp=False),
+        "token_type": "Bearer", "expires_in": ACCESS_TTL,
+    }
 
 
 @app.post("/api/guardians/{gid}/portal-link", dependencies=[Depends(require_auth)])
