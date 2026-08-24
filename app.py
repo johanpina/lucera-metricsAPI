@@ -302,7 +302,13 @@ class LoginIn(BaseModel):
 
 
 class GuardianLoginIn(BaseModel):
-    phone: str
+    """Login del portal. Acepta telefono O correo, indistintamente.
+
+    `phone` se mantiene para no romper al cliente que ya existe; `identifier` es el campo
+    nuevo y admite cualquiera de los dos. Si llegan ambos, gana `identifier`.
+    """
+    phone: str | None = None
+    identifier: str | None = None
     password: str
 
 
@@ -344,17 +350,28 @@ def login(body: LoginIn) -> dict:
 
 @app.post("/auth/guardian/login")
 def guardian_login(body: GuardianLoginIn) -> dict:
-    """Portal del acudiente: login con TELÉFONO + contraseña. Devuelve un token con
-    scope='portal' que SOLO puede leer los datos del propio acudiente (no PII de otros)."""
-    phone = _digits(body.phone)
+    """Portal del acudiente: login con TELEFONO O CORREO + contrasena. Devuelve un token
+    con scope='portal' que SOLO puede leer los datos del propio acudiente (no PII de otros).
+
+    Se resuelve por correo si el identificador trae '@'; si no, por telefono normalizado a
+    digitos. Un mismo acudiente puede entrar con cualquiera de los dos.
+    """
+    ident = (body.identifier or body.phone or "").strip()
+    if not ident:
+        raise HTTPException(status_code=422, detail="Send identifier (phone or email).")
+    if "@" in ident:
+        campo, valor = "LOWER(u.email)", ident.lower()
+    else:
+        campo, valor = "u.phone_number", _digits(ident)
     rows = _q(
-        """SELECT g.id AS gid, g.full_name AS name, u.password_hash AS ph, u.status AS ustatus
+        f"""SELECT g.id AS gid, g.full_name AS name, u.password_hash AS ph, u.status AS ustatus
            FROM guardians g JOIN users u ON u.id=g.user_id
-           WHERE u.phone_number=%s AND u.deleted_at IS NULL""",
-        (phone,),
+           WHERE {campo}=%s AND u.deleted_at IS NULL""",
+        (valor,),
     )
+    # Mismo mensaje exista o no la cuenta: no revelamos si el telefono/correo esta registrado.
     if not rows or not _verify_password(body.password or "", rows[0]["ph"]):
-        raise HTTPException(status_code=401, detail="Wrong phone or password.")
+        raise HTTPException(status_code=401, detail="Wrong credentials.")
     if rows[0]["ustatus"] != "active":
         raise HTTPException(status_code=403, detail="Account is not active.")
     g = rows[0]
@@ -502,6 +519,7 @@ def _child(d: dict) -> dict:
         # Cédula del PACIENTE. Ya venía en /api/patients; faltaba aquí, así que el mismo hijo
         # salía con campos distintos según el endpoint.
         "idNumber": d.get("id_number"), "school": d.get("school"),
+        "createdAt": _clean(d.get("created_at")), "updatedAt": _clean(d.get("updated_at")),
         "bloodType": BLOOD_OUT.get(d.get("blood_type"), None),
         "weightKg": float(d["weight_kg"]) if d.get("weight_kg") is not None else None,
         "conditions": _split(d.get("known_conditions")), "allergies": _split(d.get("allergies")),
@@ -532,7 +550,7 @@ def _children_for(gids: list[str]) -> dict:
     deps = _q(
         f"""SELECT gd.guardian_id, d.id, d.full_name AS name, d.birthday, d.blood_type, d.weight_kg,
                d.known_conditions, d.allergies, d.insurance_company_id AS ins_id, ic.name AS ins_name,
-               d.policy_number AS policy, d.id_number, d.school
+               d.policy_number AS policy, d.id_number, d.school, d.created_at, d.updated_at
             FROM dependents d JOIN guardian_dependent gd ON gd.dependent_id=d.id
             LEFT JOIN insurance_companies ic ON ic.id=d.insurance_company_id
             WHERE gd.guardian_id IN ({ph})""",
@@ -572,7 +590,14 @@ def _guardian_row(g: dict, kids: list[dict]) -> dict:
         "country": g.get("country") or _country(g["phone"]),   # nativo; fallback al prefijo del teléfono
         "province": g.get("province") or "", "address": g.get("address"),
         "city": g["city"] or g["province"] or "", "status": GSTATUS_OUT.get(g["ustatus"], "active"),
-        "plan": _plan(g["cycle"]), "insurance": insurance, "registeredAt": _clean(g["created_at"]),
+        # `plan` pasa a ser el nombre REAL (1_hijo, 2_hijos, validacion_full…), igual que
+        # en /api/accounts. `planTier` conserva la etiqueta vieja para no romper vistas ya
+        # construidas, y `planMaxDependents` dice cuantos hijos permite.
+        "plan": g.get("plan_name") or "free",
+        "planTier": _plan(g["cycle"]),
+        "planMaxDependents": int(g["plan_max"]) if g.get("plan_max") is not None else None,
+        "insurance": insurance, "registeredAt": _clean(g["created_at"]),
+        "updatedAt": _clean(g.get("updated_at")),   # trazabilidad: ultima modificacion
         # Vigencia de la suscripción. null = SIN VENCIMIENTO (cortesía, validadores, altas
         # previas a la columna); no confundir con vencida — para eso está subscriptionState.
         "subscriptionExpiresAt": _clean(g.get("expires_at")) if g.get("expires_at") else None,
@@ -586,12 +611,23 @@ def _guardian_row(g: dict, kids: list[dict]) -> dict:
 _G_SELECT = """SELECT g.id, g.full_name AS name, g.relationship_type AS rel, g.country, g.city, g.province,
     g.account_code, g.gender, g.address, g.id_number,
     g.insurance_company_id AS ins_id, ic.name AS ins_name, g.policy_number AS policy,
-    u.phone_number AS phone, u.email, u.status AS ustatus, u.created_at,
+    u.phone_number AS phone, u.email, u.status AS ustatus, u.created_at, g.updated_at,
     u.subscription_expires_at AS expires_at,
     LEFT(u.password_hash, 6) = 'pbkdf2' AS portal_enabled,
     (SELECT COUNT(*) FROM chat_sessions cs WHERE cs.guardian_id=g.id) AS chats,
     (SELECT p.billing_cycle FROM payments p WHERE p.user_id=u.id AND p.status='confirmed'
-      ORDER BY p.confirmed_at DESC LIMIT 1) AS cycle
+      ORDER BY p.confirmed_at DESC LIMIT 1) AS cycle,
+    -- Nombre REAL del plan contratado. Antes solo se traia el ciclo y se traducia a
+    -- premium_monthly/premium_annual, etiquetas que NO existen en subscription_plans: un
+    -- acudiente con `3_hijos` salia como `premium_monthly` y se perdia el cupo, que es
+    -- justo lo que define el plan. /api/accounts ya devolvia el nombre real, asi que los
+    -- dos endpoints se contradecian para el mismo acudiente.
+    (SELECT sp.name FROM payments p JOIN subscription_plans sp ON sp.id=p.plan_id
+      WHERE p.user_id=u.id AND p.status='confirmed'
+      ORDER BY p.confirmed_at DESC LIMIT 1) AS plan_name,
+    (SELECT sp.max_dependents FROM payments p JOIN subscription_plans sp ON sp.id=p.plan_id
+      WHERE p.user_id=u.id AND p.status='confirmed'
+      ORDER BY p.confirmed_at DESC LIMIT 1) AS plan_max
     FROM guardians g JOIN users u ON u.id=g.user_id
     LEFT JOIN insurance_companies ic ON ic.id=g.insurance_company_id"""
 
@@ -626,33 +662,60 @@ def _current_plan(uid: str) -> str:
     return _plan(r[0]["billing_cycle"]) if r else "free"
 
 
-def _apply_plan(uid: str, plan: str | None) -> None:
+def _apply_plan(uid: str, plan: str | None, cycle: str | None = None) -> None:
+    """Asigna un plan al acudiente materializandolo como un pago confirmado.
+
+    `plan` acepta el NOMBRE REAL de subscription_plans (1_hijo, 2_hijos, 3_hijos,
+    4_5_hijos, validacion_full…), "free", y por compatibilidad las etiquetas viejas
+    premium_monthly / premium_annual.
+
+    Antes solo admitia las tres etiquetas viejas y, peor, al asignar "premium" tomaba
+    `ORDER BY price_monthly_usd LIMIT 1` -- es decir SIEMPRE el plan mas barato. Nunca se
+    pudo asignar 2_hijos ni 3_hijos desde el tablero: se pedia uno y se guardaba otro.
+    """
     if plan is None:
         return
-    plan = plan.lower()
-    if plan not in ("free", "premium_monthly", "premium_annual"):
-        raise HTTPException(status_code=422, detail="plan must be free|premium_monthly|premium_annual.")
-    if _current_plan(uid) == plan:
-        return  # sin cambios
-    # anula cualquier pago confirmado previo (→ vuelve a free)
-    _exec("UPDATE payments SET status='refunded' WHERE user_id=%s AND status='confirmed'", (uid,))
+    plan = plan.strip().lower()
+
+    # free: se anulan los pagos y no queda nada que vencer.
     if plan == "free":
-        # Sin plan pago no hay qué vencer. NULL = sin vencimiento, como antes de la columna.
+        if _current_plan(uid) == "free":
+            return
+        _exec("UPDATE payments SET status='refunded' WHERE user_id=%s AND status='confirmed'", (uid,))
         _exec("UPDATE users SET subscription_expires_at=NULL WHERE id=%s", (uid,))
         return
-    cycle = "annual" if plan == "premium_annual" else "monthly"
-    prem = _q("SELECT id, price_monthly_usd, price_annual_usd FROM subscription_plans "
-              "WHERE active=1 AND price_monthly_usd>0 ORDER BY price_monthly_usd LIMIT 1")
-    if not prem:
-        raise HTTPException(status_code=409, detail="No active premium plan to assign.")
-    amount = prem[0]["price_annual_usd"] if cycle == "annual" else prem[0]["price_monthly_usd"]
+
+    # Etiquetas viejas: se traducen al plan mas barato, que es lo que hacian antes.
+    if plan in ("premium_monthly", "premium_annual"):
+        cycle = cycle or ("annual" if plan == "premium_annual" else "monthly")
+        fila = _q("SELECT id, name, price_monthly_usd, price_annual_usd FROM subscription_plans "
+                  "WHERE active=1 AND price_monthly_usd>0 ORDER BY price_monthly_usd LIMIT 1")
+    else:
+        fila = _q("SELECT id, name, price_monthly_usd, price_annual_usd FROM subscription_plans "
+                  "WHERE active=1 AND LOWER(name)=%s", (plan,))
+        if not fila:
+            validos = [r["name"] for r in _q("SELECT name FROM subscription_plans WHERE active=1")]
+            raise HTTPException(422, f"plan must be free or one of: {', '.join(validos)}")
+        cycle = cycle or "monthly"
+
+    if not fila:
+        raise HTTPException(409, "No active premium plan to assign.")
+    if cycle not in ("monthly", "annual"):
+        raise HTTPException(422, "billingCycle must be monthly|annual.")
+
+    # Ya lo tiene con el mismo ciclo -> no duplicar el pago.
+    actual = _q("SELECT sp.name, p.billing_cycle FROM payments p "
+                "JOIN subscription_plans sp ON sp.id=p.plan_id "
+                "WHERE p.user_id=%s AND p.status='confirmed' ORDER BY p.confirmed_at DESC LIMIT 1", (uid,))
+    if actual and actual[0]["name"].lower() == fila[0]["name"].lower() and actual[0]["billing_cycle"] == cycle:
+        return
+
+    _exec("UPDATE payments SET status='refunded' WHERE user_id=%s AND status='confirmed'", (uid,))
+    amount = fila[0]["price_annual_usd"] if cycle == "annual" else fila[0]["price_monthly_usd"]
     _exec("""INSERT INTO payments (id, user_id, plan_id, billing_cycle, provider, amount_usd, status, created_at, confirmed_at)
              VALUES (%s,%s,%s,%s,'tilopay',%s,'confirmed',NOW(),NOW())""",
-          (str(uuid.uuid4()), uid, prem[0]["id"], cycle, amount))
-    # Asignar el plan desde el panel NO pasa por el bot, así que la vigencia se fija también
-    # aquí. Misma regla que app/services/subscriptions.py del bot: encadena si sigue vigente,
-    # cuenta desde hoy si venció o nunca tuvo. INTERVAL de MySQL ya recorta el fin de mes
-    # (31-ene + 1 MONTH = 28-feb), igual que el _add_months del bot.
+          (str(uuid.uuid4()), uid, fila[0]["id"], cycle, amount))
+    # Vigencia: misma regla que app/services/subscriptions.py del bot.
     _exec(
         "UPDATE users SET subscription_expires_at = DATE_ADD("
         "  GREATEST(COALESCE(subscription_expires_at, NOW()), NOW()), "
@@ -672,7 +735,8 @@ class GuardianCreate(BaseModel):
     province: str | None = None
     address: str | None = None
     status: str | None = None        # active|suspended|inactive (def. active)
-    plan: str | None = None          # free|premium_monthly|premium_annual
+    plan: str | None = None          # free | nombre real (1_hijo, 2_hijos…) | etiquetas viejas
+    billingCycle: str | None = None  # monthly|annual (def. monthly)
     insuranceId: int | None = None   # seguro del acudiente (guardians.insurance_company_id)
     policyNumber: str | None = None
     idNumber: str | None = None      # cedula del acudiente
@@ -694,7 +758,7 @@ def guardian_create(body: GuardianCreate):
          (gid, uid, body.name.strip(), rel, body.address, body.country, body.city, body.province,
           body.insuranceId, body.policyNumber, (body.idNumber or "").strip() or None)),
     ]))
-    _apply_plan(uid, body.plan)
+    _apply_plan(uid, body.plan, body.billingCycle)
     return _one_guardian(gid)
 
 
@@ -714,7 +778,8 @@ class GuardianUpdate(BaseModel):
     gender: str | None = None        # femenino|masculino|otro|prefiere_no_decir
     relationship: str | None = None
     status: str | None = None
-    plan: str | None = None          # free|premium_monthly|premium_annual
+    plan: str | None = None          # free | nombre real (1_hijo, 2_hijos…) | etiquetas viejas
+    billingCycle: str | None = None  # monthly|annual (def. monthly)
     insuranceId: int | None = None   # seguro del acudiente (guardians.insurance_company_id)
     policyNumber: str | None = None
 
@@ -764,7 +829,7 @@ def guardian_update(gid: str, body: GuardianUpdate):
         usets.append("is_active=%s"); uargs.append(1 if st == "active" else 0)
     if usets:
         _exec(f"UPDATE users SET {', '.join(usets)}, updated_at=NOW() WHERE id=%s", tuple(uargs + [uid]))
-    _apply_plan(uid, body.plan)
+    _apply_plan(uid, body.plan, body.billingCycle)
     return _one_guardian(gid)
 
 

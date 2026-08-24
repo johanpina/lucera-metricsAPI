@@ -223,10 +223,15 @@ guardians = requests.get(f<span class="ts">"{base}/api/guardians"</span>, header
           (<span class="badge b-warn">403</span>) — y viceversa.</p>
         <div class="ep-h"><span class="m post">post</span><span class="path">/auth/guardian/login</span>
           <span class="ret">→ <code>{ access_token, refresh_token, guardian }</code> · público</span></div>
-        <div class="single"><span class="cp" data-copy>Copiar</span><pre><code><span class="tc">// request</span>  { <span class="tk">"phone"</span>:<span class="ts">"+57 301 5384517"</span>, <span class="tk">"password"</span>:<span class="ts">"MiPortal2026!"</span> }
+        <div class="single"><span class="cp" data-copy>Copiar</span><pre><code><span class="tc">// ★ acepta TELÉFONO o CORREO, indistintamente, en `identifier`</span>
+<span class="tc">// request</span>  { <span class="tk">"identifier"</span>:<span class="ts">"ana@correo.com"</span>, <span class="tk">"password"</span>:<span class="ts">"MiPortal2026!"</span> }
+<span class="tc">//    o     </span> { <span class="tk">"identifier"</span>:<span class="ts">"+57 301 5384517"</span>, <span class="tk">"password"</span>:<span class="ts">"…"</span> }
+<span class="tc">//    o     </span> { <span class="tk">"phone"</span>:<span class="ts">"+57 301 5384517"</span>, <span class="tk">"password"</span>:<span class="ts">"…"</span> }  <span class="tc">← campo viejo, sigue sirviendo</span>
 <span class="tc">// response</span> { <span class="tk">"access_token"</span>:<span class="ts">"eyJ…"</span>, <span class="tk">"refresh_token"</span>:<span class="ts">"eyJ…"</span>,
              <span class="tk">"guardian"</span>:{ <span class="tk">"id"</span>:<span class="ts">"…"</span>, <span class="tk">"name"</span>:<span class="ts">"Johan Piña"</span> } }
-<span class="tc">// El teléfono admite espacios/+, se normaliza a dígitos. Refresh: mismo /auth/refresh.</span></code></pre></div>
+<span class="tc">// Si trae "@" se busca por correo; si no, por teléfono normalizado a dígitos.</span>
+<span class="tc">// 401 "Wrong credentials." tanto si la clave está mal como si la cuenta no existe:</span>
+<span class="tc">// no revelamos si un teléfono/correo está registrado. Refresh: mismo /auth/refresh.</span></code></pre></div>
         <h3>Registro: el acudiente fija SU contraseña (recomendado)</h3>
         <p>Un acudiente <b>no tiene contraseña</b> al inicio (su <code>password_hash</code> queda vacío,
           no puede entrar). El flujo previsto: el <b>bot</b> le manda por WhatsApp un <b>link firmado</b> al
@@ -346,13 +351,17 @@ GET /api/portal-links?only_missing=true
   <span class="tk">"address"</span>:<span class="ts">"Calle 5, casa 12"</span>,  <span class="tc">// ★ dirección del acudiente</span>
   <span class="tk">"chats"</span>:<span class="tn">40</span>,             <span class="tc">// ★ nº de consultas de la cuenta</span>
   <span class="tk">"status"</span>:<span class="ts">"active"</span>,       <span class="tc">// active|suspended|inactive</span>
-  <span class="tk">"plan"</span>:<span class="ts">"free"</span>,           <span class="tc">// free|premium_monthly|premium_annual</span>
+  <span class="tk">"plan"</span>:<span class="ts">"2_hijos"</span>,        <span class="tc">// ★ NOMBRE REAL del plan (igual que /api/accounts)</span>
+  <span class="tk">"planMaxDependents"</span>:<span class="tn">2</span>,      <span class="tc">// ★ cuántos hijos permite · null si es free</span>
+  <span class="tk">"planTier"</span>:<span class="ts">"premium_monthly"</span>, <span class="tc">// etiqueta vieja, se conserva por compatibilidad</span>
   <span class="tk">"subscriptionExpiresAt"</span>:<span class="ts">"2026-09-03 04:50"</span>,  <span class="tc">// ★ null = SIN vencimiento</span>
   <span class="tk">"subscriptionState"</span>:<span class="ts">"active"</span>,   <span class="tc">// ★ active|expired|none — pinta con ESTE, no con la fecha</span>
   <span class="tk">"insurance"</span>:{ <span class="tk">"id"</span>:<span class="tn">10</span>, <span class="tk">"name"</span>:<span class="ts">"Acerta"</span>, <span class="tk">"policyNumber"</span>:<span class="ts">"POL-123"</span> },  <span class="tc">// o null si ningún hijo tiene seguro</span>
   <span class="tk">"registeredAt"</span>:<span class="ts">"2026-07-01 07:04"</span>,
+  <span class="tk">"updatedAt"</span>:<span class="ts">"2026-08-24 22:42"</span>,   <span class="tc">// ★ última modificación</span>
   <span class="tk">"children"</span>:[ { <span class="tk">"id"</span>:<span class="ts">"…"</span>, <span class="tk">"name"</span>:<span class="ts">"Lucas Muschett"</span>, <span class="tk">"birthDate"</span>:<span class="ts">"2022-04-05"</span>,
       <span class="tk">"idNumber"</span>:<span class="ts">"8-999-111"</span>, <span class="tk">"school"</span>:<span class="ts">"Colegio Javier"</span>,  <span class="tc">// ★ cédula del PACIENTE</span>
+      <span class="tk">"createdAt"</span>:<span class="ts">"…"</span>, <span class="tk">"updatedAt"</span>:<span class="ts">"…"</span>,  <span class="tc">// ★ trazabilidad del hijo</span>
       <span class="tk">"bloodType"</span>:null, <span class="tk">"weightKg"</span>:<span class="tn">16.5</span>, <span class="tk">"conditions"</span>:[], <span class="tk">"allergies"</span>:[<span class="ts">"Maní"</span>],
       <span class="tk">"insurance"</span>:{ <span class="tk">"id"</span>:<span class="tn">10</span>, <span class="tk">"name"</span>:<span class="ts">"Acerta"</span>, <span class="tk">"policyNumber"</span>:<span class="ts">"POL-123"</span> } } ]
 }</code></pre></div>
@@ -679,6 +688,26 @@ GET /api/chats?guardian_id=3015d1d6-…</code></pre></div>
         <p style="font-size:14px;color:var(--muted)">El seguro se toma del <b>acudiente</b> y, si no tiene,
           del paciente (<code>COALESCE</code>).</p>
 
+        <div class="adm"><div class="t">★ Planes: ahora se devuelve el nombre REAL</div><div class="c">
+          <p><code>/api/guardians</code> traducía el ciclo de facturación a etiquetas que <b>no
+          existen</b> en la base (<code>premium_monthly</code> / <code>premium_annual</code>),
+          mientras <code>/api/accounts</code> ya devolvía el nombre real. Los dos endpoints se
+          contradecían para el mismo acudiente. Ya están alineados:</p>
+          <div class="tw"><table>
+            <tr><th>Campo</th><th>Qué trae</th></tr>
+            <tr><td><code>plan</code></td><td>nombre real: <code>free</code>, <code>1_hijo</code>, <code>2_hijos</code>, <code>3_hijos</code>, <code>4_5_hijos</code>, <code>validacion_full</code></td></tr>
+            <tr><td><code>planMaxDependents</code></td><td>cuántos hijos permite · <code>null</code> si es free</td></tr>
+            <tr><td><code>planTier</code></td><td>la etiqueta vieja, se conserva para no romper vistas ya hechas</td></tr>
+          </table></div>
+          <p><b>Para asignarlo</b>, <code>PATCH /api/guardians/{id}</code> acepta el nombre real y,
+          opcional, el ciclo. Antes solo admitía las tres etiquetas viejas y siempre guardaba el
+          plan <b>más barato</b>: pedir «premium» daba <code>1_hijo</code> aunque quisieras
+          <code>3_hijos</code>.</p>
+          <div class="single"><span class="cp" data-copy>Copiar</span><pre><code>{ <span class="tk">"plan"</span>:<span class="ts">"3_hijos"</span>, <span class="tk">"billingCycle"</span>:<span class="ts">"annual"</span> }   <span class="tc">// billingCycle opcional, def. monthly</span>
+<span class="tc">// 422 si el plan no existe (el error lista los válidos) o si el ciclo no es monthly|annual</span>
+<span class="tc">// El catálogo completo para llenar el desplegable: GET /api/plans</span></code></pre></div>
+        </div></div>
+
         <h3>Sección Cuentas</h3>
         <div class="ep-h"><span class="m get">get</span><span class="path">/api/accounts</span>
           <span class="ret">· <code>?page=&amp;page_limit=&amp;q=</code> · envelope paginado</span></div>
@@ -719,6 +748,42 @@ GET /api/chats?guardian_id=3015d1d6-…</code></pre></div>
             <code>PATCH /api/guardians/{id}</code>. Si renuevas antes de vencer, el ciclo nuevo se
             encadena al final del vigente — pagar temprano no quita días. <b>Es de solo lectura</b>:
             no hay campo para editarla a mano; se cambia asignando el <code>plan</code>.</p></div></div>
+
+        <div class="adm"><div class="t">★ Contraseñas del ACUDIENTE — no van por /api/users</div><div class="c">
+          <p><code>GET /api/users</code> <b>excluye a los acudientes a propósito</b>
+          (<code>u.role &lt;&gt; 'guardian'</code>): esa pestaña es de operadores. Los acudientes
+          se listan en <code>/api/guardians</code> y tienen sus propios endpoints:</p>
+          <div class="tw"><table>
+            <tr><th>Qué quieres hacer</th><th>Endpoint</th></tr>
+            <tr><td>Que un admin le ponga la clave</td><td><code>POST /api/guardians/{id}/portal-password</code></td></tr>
+            <tr><td>Generar su enlace de primer ingreso</td><td><code>POST /api/guardians/{id}/portal-link</code></td></tr>
+            <tr><td>Enlaces en lote (los que aún no tienen clave)</td><td><code>GET /api/portal-links?only_missing=true</code></td></tr>
+          </table></div>
+          <div class="single"><span class="cp" data-copy>Copiar</span><pre><code><span class="tc">// POST /api/guardians/{id}/portal-password — mínimo 6 caracteres</span>
+{ <span class="tk">"password"</span>:<span class="ts">"ClaveDelAcudiente"</span> }   <span class="tc">// → { "ok": true, "id": "…" }</span></code></pre></div>
+        </div></div>
+
+        <div class="adm"><div class="t">★ Primer ingreso del acudiente — usa el enlace firmado</div><div class="c">
+          <p>El flujo ya existe completo. Va con un <b>token firmado</b>, no con el teléfono suelto:</p>
+          <div class="single"><span class="cp" data-copy>Copiar</span><pre><code><span class="tc">// 1) El admin (o el bot) genera el enlace tras crear al acudiente</span>
+POST /api/guardians/{id}/portal-link   <span class="tc">// → { "url": "…?token=XXX", "token": "XXX" }</span>
+
+<span class="tc">// 2) La pantalla de primer ingreso lee el token y precarga los datos</span>
+GET /portal/register/{token}
+<span class="tc">// → { "guardianId":"…", "name":"Ana Muschett", "phone":"507…", "email":"…",</span>
+<span class="tc">//      "hasPassword": false }   ← si es true, ya la fijó: manda al login normal</span>
+
+<span class="tc">// 3) El acudiente elige su contraseña (público, sin auth)</span>
+POST /portal/register
+{ <span class="tk">"token"</span>:<span class="ts">"XXX"</span>, <span class="tk">"password"</span>:<span class="ts">"…"</span>, <span class="tk">"email"</span>:<span class="ts">"opcional"</span> }
+<span class="tc">// activa la cuenta y habilita el login del portal</span></code></pre></div>
+          <p><b>Por qué con token y no pidiendo el teléfono:</b> si bastara con escribir un número
+          para que el API confirme que existe y deje fijar la clave, cualquiera que conozca el
+          teléfono de un acudiente se queda con la cuenta — y detrás hay datos de salud de menores.
+          El token firmado prueba que quien abre la pantalla recibió el enlace.</p>
+          <p>Al crear un acudiente desde el tablero: pide su <code>portal-link</code> y redirígelo
+          a esa vista con el token. Es exactamente la pantalla de primer ingreso.</p>
+        </div></div>
 
         <h3 id="cuentas-usuarios">Usuarios del tablero · pestaña <b>Cuentas</b></h3>
         <div class="adm"><div class="t">★ Ojo con el nombre: hay DOS cosas llamadas «cuentas»</div><div class="c">
