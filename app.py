@@ -921,6 +921,18 @@ def guardian_reset_portal_password(gid: str):
             "temporaryPassword": temp, "mustChangePassword": True}
 
 
+class UserOwnPassword(BaseModel):
+    """Cambio de la propia contrasena, verificando la actual.
+
+    Se declara AQUI, antes del primer endpoint que la usa. El archivo tiene
+    `from __future__ import annotations`, asi que las anotaciones son cadenas: si la clase
+    se define despues del endpoint, FastAPI no la resuelve y trata el cuerpo como un
+    parametro de QUERY -- responde 422 "Field required" y nunca lee el JSON.
+    """
+    currentPassword: str
+    newPassword: str
+
+
 @app.post("/portal/password")
 def portal_change_own_password(body: UserOwnPassword, gid: str = Depends(require_guardian)):
     """El ACUDIENTE cambia su propia clave, verificando la actual.
@@ -2222,11 +2234,6 @@ class UserUpdate(BaseModel):
 
 class UserPassword(BaseModel):
     password: str
-
-
-class UserOwnPassword(BaseModel):
-    currentPassword: str
-    newPassword: str
 
 
 class UserMeUpdate(BaseModel):
