@@ -970,7 +970,10 @@ def guardian_portal_link(gid: str):
     if not _q("SELECT id FROM guardians WHERE id=%s", (gid,)):
         raise HTTPException(status_code=404, detail="Guardian not found.")
     token = _make_register_token(gid)
-    url = f"{PORTAL_REGISTER_URL}?token={token}" if PORTAL_REGISTER_URL else None
+    # El token va en el FRAGMENTO (#), no en la query. El navegador NUNCA manda el fragmento
+    # al servidor: no aparece en los logs de acceso, ni en los del proxy, ni en la cabecera
+    # `Referer` hacia terceros. El front lo lee de `location.hash` y lo manda en el cuerpo.
+    url = f"{PORTAL_REGISTER_URL}#token={token}" if PORTAL_REGISTER_URL else None
     return {"token": token, "url": url, "expiresInHours": REGISTER_TTL // 3600}
 
 
@@ -993,7 +996,7 @@ def portal_links_bulk(page: int = 1, page_limit: int = 50, only_missing: bool = 
         items.append({
             "guardianId": r["id"], "name": r["name"], "phone": r["phone"],
             "hasPassword": bool(r["has_pw"]),
-            "token": tok, "url": (f"{PORTAL_REGISTER_URL}?token={tok}" if PORTAL_REGISTER_URL else None),
+            "token": tok, "url": (f"{PORTAL_REGISTER_URL}#token={tok}" if PORTAL_REGISTER_URL else None),
         })
     return _envelope(items, page, page_limit, total)
 
@@ -1623,10 +1626,22 @@ class PortalRegister(BaseModel):
     email: str | None = None
 
 
-@app.get("/portal/register/{token}")
-def portal_register_info(token: str):
-    """Público: valida el link y devuelve datos para precargar el formulario de registro."""
-    gid = _verify_register_token(token)
+class PortalRegisterInfo(BaseModel):
+    """Solo el token. Va en el CUERPO, no en la ruta ni en la query."""
+    token: str
+
+
+@app.post("/portal/register/info")
+def portal_register_info(body: PortalRegisterInfo):
+    """Publico: valida el enlace y devuelve datos para precargar el formulario.
+
+    El token viaja en el CUERPO a proposito. Antes iba en la ruta
+    (`GET /portal/register/{token}`) y eso lo dejaba escrito en el historial del navegador,
+    en los logs de acceso del servidor y del proxy, y se filtraba por la cabecera `Referer`
+    a cualquier recurso externo que cargara la pagina. Quien lo viera podia fijarle la
+    contrasena a ese acudiente durante toda la vigencia del token.
+    """
+    gid = _verify_register_token(body.token)
     rows = _q(
         """SELECT g.full_name AS name, u.phone_number AS phone, u.email,
                LEFT(u.password_hash, 6) = 'pbkdf2' AS has_pw

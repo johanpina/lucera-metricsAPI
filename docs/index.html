@@ -238,14 +238,15 @@ guardians = requests.get(f<span class="ts">"{base}/api/guardians"</span>, header
           formulario de registro del dashboard, donde <b>él mismo</b> establece su contraseña.</p>
         <div class="ep-h"><span class="m post">post</span><span class="path">/api/guardians/{id}/portal-link</span>
           <span class="ret">→ <code>{ token, url, expiresInHours }</code> · token admin</span></div>
-        <div class="ep-h" style="margin-top:.7em"><span class="m get">get</span><span class="path">/portal/register/{token}</span>
+        <div class="ep-h" style="margin-top:.7em"><span class="m post">post</span><span class="path">/portal/register/info</span>
           <span class="ret">→ precarga el form · público</span></div>
         <div class="ep-h" style="margin-top:.7em"><span class="m post">post</span><span class="path">/portal/register</span>
           <span class="ret">→ fija la clave + activa · público</span></div>
         <div class="single"><span class="cp" data-copy>Copiar</span><pre><code><span class="tc">// 1) el bot (o admin) obtiene el link firmado y lo envía por WhatsApp</span>
 <span class="tc">//    url = {PORTAL_REGISTER_URL}?token=…  (JWT HS256, exp 72h, claims sub=guardianId, typ=register)</span>
 <span class="tc">// 2) el form valida el token para precargar nombre/teléfono:</span>
-GET /portal/register/{token} → { <span class="tk">"guardianId"</span>, <span class="tk">"name"</span>, <span class="tk">"phone"</span>, <span class="tk">"email"</span>, <span class="tk">"hasPassword"</span> }
+POST /portal/register/info  { <span class="tk">"token"</span>:<span class="ts">"eyJ…"</span> }
+  → { <span class="tk">"guardianId"</span>, <span class="tk">"name"</span>, <span class="tk">"phone"</span>, <span class="tk">"email"</span>, <span class="tk">"hasPassword"</span> }
 <span class="tc">// 3) el acudiente envía su contraseña:</span>
 POST /portal/register  { <span class="tk">"token"</span>:<span class="ts">"eyJ…"</span>, <span class="tk">"password"</span>:<span class="ts">"MiClave123"</span>, <span class="tk">"email"</span>:<span class="ts">"opcional"</span> }
 <span class="tc">// token vencido → 410 · inválido → 400 · clave &lt;6 → 422</span></code></pre></div>
@@ -793,10 +794,10 @@ GET /api/chats?guardian_id=3015d1d6-…</code></pre></div>
         <div class="adm"><div class="t">★ Primer ingreso del acudiente — usa el enlace firmado</div><div class="c">
           <p>El flujo ya existe completo. Va con un <b>token firmado</b>, no con el teléfono suelto:</p>
           <div class="single"><span class="cp" data-copy>Copiar</span><pre><code><span class="tc">// 1) El admin (o el bot) genera el enlace tras crear al acudiente</span>
-POST /api/guardians/{id}/portal-link   <span class="tc">// → { "url": "…?token=XXX", "token": "XXX" }</span>
+POST /api/guardians/{id}/portal-link   <span class="tc">// → { "url": "…#token=XXX", "token": "XXX" }</span>
 
-<span class="tc">// 2) La pantalla de primer ingreso lee el token y precarga los datos</span>
-GET /portal/register/{token}
+<span class="tc">// 2) La pantalla lee el token de location.hash y lo manda en el CUERPO</span>
+POST /portal/register/info   { <span class="tk">"token"</span>:<span class="ts">"XXX"</span> }
 <span class="tc">// → { "guardianId":"…", "name":"Ana Muschett", "phone":"507…", "email":"…",</span>
 <span class="tc">//      "hasPassword": false }   ← si es true, ya la fijó: manda al login normal</span>
 
@@ -804,6 +805,21 @@ GET /portal/register/{token}
 POST /portal/register
 { <span class="tk">"token"</span>:<span class="ts">"XXX"</span>, <span class="tk">"password"</span>:<span class="ts">"…"</span>, <span class="tk">"email"</span>:<span class="ts">"opcional"</span> }
 <span class="tc">// activa la cuenta y habilita el login del portal</span></code></pre></div>
+          <div class="tw"><table>
+            <tr><th>★ Qué cambió</th><th>Antes</th><th>Ahora</th></tr>
+            <tr><td>Dónde viaja el token en la URL</td><td><code>…?token=XXX</code> (query)</td><td><b><code>…#token=XXX</code> (fragmento)</b></td></tr>
+            <tr><td>Endpoint que precarga los datos</td><td><code>GET /portal/register/{token}</code></td><td><b><code>POST /portal/register/info</code></b>, token en el cuerpo</td></tr>
+          </table></div>
+          <p><b>Lo que el front tiene que hacer distinto:</b> leer el token de
+          <code>location.hash</code> (no de la query) y mandarlo en el cuerpo del
+          <code>POST</code>. Ejemplo: <code>const t = new URLSearchParams(location.hash.slice(1)).get('token')</code>.</p>
+          <p><b>Por qué el fragmento:</b> el navegador NUNCA lo manda al servidor. Así el token
+          no queda en los logs de acceso, ni en los del proxy, ni se filtra por la cabecera
+          <code>Referer</code> a terceros. En la query sí quedaba escrito en todos esos sitios.</p>
+          <p><b>Ojo con lo que NO cambió:</b> el token dura 72 h, <b>no es de un solo uso</b> y no
+          se invalida al usarse. Quien lo obtenga puede fijarle la contraseña a ese acudiente
+          durante toda su vigencia. Si se quiere cerrar eso, hay que decidirlo aparte.</p>
+
           <p><b>Por qué con token y no pidiendo el teléfono:</b> si bastara con escribir un número
           para que el API confirme que existe y deje fijar la clave, cualquiera que conozca el
           teléfono de un acudiente se queda con la cuenta — y detrás hay datos de salud de menores.
