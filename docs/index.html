@@ -243,7 +243,7 @@ guardians = requests.get(f<span class="ts">"{base}/api/guardians"</span>, header
         <div class="ep-h" style="margin-top:.7em"><span class="m post">post</span><span class="path">/portal/register</span>
           <span class="ret">→ fija la clave + activa · público</span></div>
         <div class="single"><span class="cp" data-copy>Copiar</span><pre><code><span class="tc">// 1) el bot (o admin) obtiene el link firmado y lo envía por WhatsApp</span>
-<span class="tc">//    url = {PORTAL_REGISTER_URL}?token=…  (JWT HS256, exp 72h, claims sub=guardianId, typ=register)</span>
+<span class="tc">//    url = {PORTAL_REGISTER_URL}#token=…  ← FRAGMENTO, no query (JWT HS256, exp 72h, sub=guardianId, typ=register)</span>
 <span class="tc">// 2) el form valida el token para precargar nombre/teléfono:</span>
 POST /portal/register/info  { <span class="tk">"token"</span>:<span class="ts">"eyJ…"</span> }
   → { <span class="tk">"guardianId"</span>, <span class="tk">"name"</span>, <span class="tk">"phone"</span>, <span class="tk">"email"</span>, <span class="tk">"hasPassword"</span> }
@@ -816,9 +816,11 @@ POST /portal/register
           <p><b>Por qué el fragmento:</b> el navegador NUNCA lo manda al servidor. Así el token
           no queda en los logs de acceso, ni en los del proxy, ni se filtra por la cabecera
           <code>Referer</code> a terceros. En la query sí quedaba escrito en todos esos sitios.</p>
-          <p><b>Ojo con lo que NO cambió:</b> el token dura 72 h, <b>no es de un solo uso</b> y no
-          se invalida al usarse. Quien lo obtenga puede fijarle la contraseña a ese acudiente
-          durante toda su vigencia. Si se quiere cerrar eso, hay que decidirlo aparte.</p>
+          <p><b>★ El enlace es de UN SOLO USO.</b> Al fijar la contraseña queda consumido:
+          reusarlo devuelve <code>410 · This registration link was already used. Ask for a new
+          one.</code> Si hay que reenviárselo a alguien, pide otro con
+          <code>portal-link</code> — el nuevo sí funciona, porque se emite después.</p>
+          <p>Sigue durando <b>72 h</b> por si se decide acortarlo más adelante.</p>
 
           <p><b>Por qué con token y no pidiendo el teléfono:</b> si bastara con escribir un número
           para que el API confirme que existe y deje fijar la clave, cualquiera que conozca el

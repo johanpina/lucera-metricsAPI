@@ -16,7 +16,7 @@ import os
 import re
 import time
 import uuid
-from datetime import date, datetime
+from datetime import date, datetime, timezone
 from decimal import Decimal
 from pathlib import Path
 
@@ -244,7 +244,26 @@ def _verify_register_token(token: str) -> str:
         raise HTTPException(status_code=400, detail="Invalid registration link.")
     if c.get("typ") != "register" or not c.get("sub"):
         raise HTTPException(status_code=400, detail="Invalid registration token.")
-    return c["sub"]
+    gid = c["sub"]
+
+    # UN SOLO USO: se rechaza cualquier token emitido ANTES de la ultima vez que se uso un
+    # enlace para esa cuenta. Antes el token seguia sirviendo las 72 h completas aunque ya
+    # se hubiera fijado la clave, asi que quien lo obtuviera podia volver a cambiarla.
+    # Un reset posterior emite uno mas reciente, que si pasa: "un solo uso" no bloquea el
+    # caso legitimo de reenviarle el enlace a alguien.
+    fila = _q("""SELECT u.portal_token_used_at AS usado FROM guardians g
+                 JOIN users u ON u.id=g.user_id WHERE g.id=%s""", (gid,))
+    if fila and fila[0]["usado"] and c.get("iat"):
+        # MySQL devuelve DATETIME sin zona y guarda UTC; `.timestamp()` sobre un naive lo
+        # interpreta como hora LOCAL y mete el desfase del huso (5 h aqui), lo que invalidaba
+        # hasta los enlaces recien emitidos. Hay que marcarlo como UTC antes de comparar.
+        usado_ts = fila[0]["usado"].replace(tzinfo=timezone.utc).timestamp()
+        if int(c["iat"]) <= usado_ts:
+            raise HTTPException(
+                status_code=410,
+                detail="This registration link was already used. Ask for a new one.",
+            )
+    return gid
 
 
 def require_auth(
@@ -1668,6 +1687,9 @@ def portal_register(body: PortalRegister):
     sets, args = ["password_hash=%s", "status='active'", "is_active=1"], [_hash_password(body.password)]
     if body.email:
         sets.append("email=%s"); args.append(body.email.strip())
+    # Marca el enlace como consumido: cualquier token emitido antes de este instante
+    # deja de servir (incluido el que se acaba de usar).
+    sets.append("portal_token_used_at=NOW()")
     _exec(f"UPDATE users SET {', '.join(sets)}, updated_at=NOW() WHERE id=%s", tuple(args + [g[0]["user_id"]]))
     return {"ok": True, "guardianId": gid}
 
