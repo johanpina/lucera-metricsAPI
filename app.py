@@ -1229,7 +1229,7 @@ def chats(page: int = 1, page_limit: int = 20, derivation: str | None = None,
                 FROM messages m LEFT JOIN message_flags mf ON mf.message_id=m.id
                 WHERE m.session_id IN ({ph})
                 GROUP BY m.id, m.session_id, m.sender_role, m.content, m.created_at, m.content_type
-                ORDER BY m.created_at ASC""",
+                ORDER BY m.created_at, FIELD(m.sender_role,'user','bot','system')""",
             tuple(ids),
         )
         for m in msgs:
@@ -1840,8 +1840,11 @@ def portal_chat_messages(sid: str, gid: str = Depends(require_guardian)):
                 WHERE cs.id=%s AND cs.guardian_id=%s""", (sid, gid))
     if not ses:
         raise HTTPException(status_code=404, detail="Chat not found.")
+    # El desempate por rol es para los mensajes anteriores a la migracion b2e5f81a37c6,
+    # que quedaron sin milisegundos; los nuevos ya ordenan solos por el instante.
     msgs = _q("""SELECT sender_role, content, created_at FROM messages
-                 WHERE session_id=%s ORDER BY created_at""", (sid,))
+                 WHERE session_id=%s
+                 ORDER BY created_at, FIELD(sender_role,'user','bot','system')""", (sid,))
     return {
         "id": ses[0]["id"], "patient": ses[0]["patient"] or "",
         "aiSummary": ses[0]["summary"] or None,
@@ -2787,7 +2790,8 @@ def _clinical_history_data(pid: str) -> dict:
         ph = ",".join(["%s"] * len(ids))
         for m in _q(
             f"""SELECT session_id, sender_role, content, created_at FROM messages
-                WHERE session_id IN ({ph}) ORDER BY created_at""",
+                WHERE session_id IN ({ph})
+                ORDER BY created_at, FIELD(sender_role,'user','bot','system')""",
             tuple(ids),
         ):
             sid = m["session_id"]
