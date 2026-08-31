@@ -112,6 +112,20 @@ cp .env.example .env   # y rellena
 ./run.sh
 ```
 
+## Conexiones a MySQL
+
+Las consultas salen de un pool (`dbutils.PooledDB`), no de una conexión nueva cada vez.
+Importa porque el servidor admite **46 conexiones en total** y las comparten el bot, el
+RAG y este API.
+
+| Variable | Def. | Para qué |
+|---|---|---|
+| `MYSQL_POOL_MAX` | `5` | Conexiones por instancia. Con `maxScale=3` son 15 como techo. |
+| `MYSQL_POOL_PING` | `1` | Comprueba la conexión al sacarla del pool. `0` ahorra un viaje de ida y vuelta, a cambio de que un fallo se detecte al ejecutar y DBUtils reintente — lo que en un `INSERT` podría aplicarse dos veces. |
+
+Si aparece `Can't connect to MySQL server ... timed out`, es que se agotó el presupuesto
+de conexiones del servidor, no que el pool sea pequeño.
+
 ## Deploy (Cloud Run)
 ```bash
 gcloud run deploy lucera-metrics --source . --region us-central1 \

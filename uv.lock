@@ -129,6 +129,15 @@ wheels = [
 ]
 
 [[package]]
+name = "dbutils"
+version = "3.2.0"
+source = { registry = "https://pypi.org/simple" }
+sdist = { url = "https://files.pythonhosted.org/packages/1f/92/dd56acef02f17cffdf1f332a5fd4486b34dec7896973156d5b5903eacda6/dbutils-3.2.0.tar.gz", hash = "sha256:dfe3f5eb6e383042d68ad07e4e9778b2abbcc4627a283f85efc8210319c075d2", size = 127992, upload-time = "2026-08-21T21:31:53.27Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/51/08/7b88774c4af482423684157374a90df8e0f54b04b63787c62fe45776f6f7/dbutils-3.2.0-py3-none-any.whl", hash = "sha256:5b512edbff29697d118359c1a7a48ce9f93b9b6e4ecebad25396b987b4bce947", size = 36210, upload-time = "2026-08-21T21:31:52.049Z" },
+]
+
+[[package]]
 name = "fastapi"
 version = "0.139.0"
 source = { registry = "https://pypi.org/simple" }
@@ -210,6 +219,7 @@ name = "lucera-metrics"
 version = "0.1.0"
 source = { virtual = "." }
 dependencies = [
+    { name = "dbutils" },
     { name = "fastapi" },
     { name = "pyjwt" },
     { name = "pymysql" },
@@ -219,6 +229,7 @@ dependencies = [
 
 [package.metadata]
 requires-dist = [
+    { name = "dbutils", specifier = ">=3.1" },
     { name = "fastapi", specifier = ">=0.115" },
     { name = "pyjwt", specifier = ">=2.8" },
     { name = "pymysql", specifier = ">=1.1.1" },

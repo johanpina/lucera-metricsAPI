@@ -73,18 +73,52 @@ BOT_HEALTH_URL = os.environ.get(
 BOT_HEALTH_TIMEOUT = float(os.environ.get("BOT_HEALTH_TIMEOUT", "8"))
 
 
+# ── Pool de conexiones ───────────────────────────────────────────────────────
+# Antes cada consulta abria y cerraba su propia conexion a MySQL. Contra Aiven, con TLS,
+# eso son ~700 ms de apretón de manos POR CONSULTA, y una pantalla del tablero hace
+# varias; ademas, unas cuantas llamadas seguidas hacian que Aiven empezara a rechazar
+# con "Can't connect ... timed out".
+#
+# El tamaño es deliberadamente corto: el servidor admite 46 conexiones EN TOTAL y las
+# comparten el bot, el RAG y este API. Con maxScale=3 en Cloud Run, 5 por instancia son
+# 15 como techo. `blocking=True` hace que un pico espere su turno en vez de reventar;
+# como ninguna ruta sostiene dos conexiones a la vez, no hay riesgo de bloqueo mutuo.
+MAX_CONEXIONES = int(os.environ.get("MYSQL_POOL_MAX", "5"))
+# Comprobar la conexion al sacarla del pool cuesta un viaje de ida y vuelta extra. Se
+# deja puesto igualmente: sin el, DBUtils detecta la conexion muerta al ejecutar y
+# REINTENTA, y en un INSERT eso podria aplicarse dos veces si el servidor alcanzo a
+# procesarlo antes de caerse. Comprobado que ambos modos se recuperan de un KILL, asi
+# que el ping no aporta resiliencia -- aporta que el fallo ocurra ANTES de escribir.
+# Si al medirlo desde Cloud Run el viaje extra pesara, se apaga con MYSQL_POOL_PING=0.
+PING = int(os.environ.get("MYSQL_POOL_PING", "1"))
+_POOL = None
+
+
+def _pool():
+    """Pool perezoso: al importar el modulo no se toca la red (tests, generar el OpenAPI)."""
+    global _POOL
+    if _POOL is None:
+        from dbutils.pooled_db import PooledDB
+
+        _POOL = PooledDB(
+            creator=pymysql, mincached=1, maxcached=3, maxconnections=MAX_CONEXIONES,
+            blocking=True, ping=PING, **DB,
+        )
+    return _POOL
+
+
 def _q(sql: str, args: tuple = ()) -> list[dict]:
-    conn = pymysql.connect(**DB)
+    conn = _pool().connection()
     try:
         with conn.cursor() as cur:
             cur.execute(sql, args) if args else cur.execute(sql)
             return cur.fetchall()
     finally:
-        conn.close()
+        conn.close()          # con el pool, close() la devuelve; no la cierra de verdad
 
 
 def _exec(sql: str, args: tuple = ()) -> int:
-    conn = pymysql.connect(**DB)
+    conn = _pool().connection()
     try:
         with conn.cursor() as cur:
             return cur.execute(sql, args) if args else cur.execute(sql)
@@ -93,8 +127,14 @@ def _exec(sql: str, args: tuple = ()) -> int:
 
 
 def _tx(statements: list[tuple]) -> None:
-    conn = pymysql.connect(**{**DB, "autocommit": False})
+    """Varias sentencias en una transaccion.
+
+    La conexion del pool viene con autocommit; `begin()` lo suspende hasta el commit o el
+    rollback, que es justo lo que hacia antes el `autocommit: False` del connect.
+    """
+    conn = _pool().connection()
     try:
+        conn.begin()
         with conn.cursor() as cur:
             for sql, args in statements:
                 cur.execute(sql, args) if args else cur.execute(sql)
