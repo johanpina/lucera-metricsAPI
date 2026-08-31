@@ -623,8 +623,18 @@ def home() -> str:
 
 
 # ── Value maps ───────────────────────────────────────────────────────────────
-REL_OUT = {"madre": "mother", "padre": "father", "tutor": "guardian", "abuelo": "grandparent", "otro": "guardian"}
-REL_IN = {"mother": "madre", "father": "padre", "guardian": "tutor", "grandparent": "abuelo"}
+# El parentesco se maneja en ESPANOL, igual que `gender` y que la propia columna. La capa
+# en ingles que habia antes no solo era inconsistente: PERDIA datos. `otro` no tenia
+# equivalente, asi que salia como "guardian" (tutor) y no habia forma de fijarlo desde el
+# API, aunque el formulario del bot lo ofrece y la BD lo admite.
+RELACIONES = ("madre", "padre", "tutor", "abuelo", "otro")
+
+# Se siguen aceptando las etiquetas inglesas EN LA ENTRADA para no romper al front que ya
+# las manda. La salida, en cambio, es siempre el valor real de la BD.
+REL_IN = {r: r for r in RELACIONES} | {
+    "mother": "madre", "father": "padre", "guardian": "tutor",
+    "grandparent": "abuelo", "other": "otro",
+}
 GSTATUS_OUT = {"active": "active", "inactive": "suspended", "suspended": "suspended", "deleted": "inactive"}
 STATUS_IN = {"active": "active", "suspended": "suspended", "inactive": "inactive"}
 PSTATUS_OUT = {"active": "active", "inactive": "suspended", "suspended": "suspended"}
@@ -735,7 +745,7 @@ def _guardian_row(g: dict, kids: list[dict]) -> dict:
         # Cedula del ACUDIENTE. Distinta de accountCode (la genera Lucera) y de la
         # idNumber de cada hijo, que es la del paciente.
         "idNumber": g.get("id_number"),
-        "relationship": REL_OUT.get(g["rel"], "guardian"),
+        "relationship": g["rel"] or "tutor",
         "country": g.get("country") or _country(g["phone"]),   # nativo; fallback al prefijo del teléfono
         "province": g.get("province") or "", "address": g.get("address"),
         "city": g["city"] or g["province"] or "", "status": GSTATUS_OUT.get(g["ustatus"], "active"),
@@ -883,8 +893,8 @@ class GuardianCreate(BaseModel):
     email: str = Field(..., description="Correo. Único en el sistema.",
                        examples=["ana@correo.com"])
     relationship: str | None = Field(
-        None, description="Parentesco, **en inglés**: `mother`, `father`, `guardian` o `grandparent`. Un valor desconocido no falla aquí: se guarda como `guardian`.",
-        examples=["mother"])
+        None, description="Parentesco: `madre`, `padre`, `tutor`, `abuelo` u `otro`. Se aceptan también las etiquetas inglesas antiguas (`mother`, `father`…), pero la respuesta siempre viene en español. Un valor desconocido no falla aquí: se guarda como `tutor`.",
+        examples=["madre"])
     country: str | None = Field(None, description="País de residencia.", examples=["Panamá"])
     city: str | None = Field(None, description="Ciudad.", examples=["Ciudad de Panamá"])
     province: str | None = Field(None, description="Provincia o departamento.")
@@ -921,7 +931,7 @@ def guardian_create(body: GuardianCreate):
     se genera una, se devuelve UNA vez en `initialPassword`, y la cuenta queda marcada para
     cambiarla en el primer ingreso.
     """
-    rel = REL_IN.get((body.relationship or "guardian").lower(), "tutor")
+    rel = REL_IN.get((body.relationship or "tutor").lower(), "tutor")
     status = STATUS_IN.get((body.status or "active").lower(), "active")
     phone = body.phone.strip().lstrip("+")
     uid, gid = str(uuid.uuid4()), str(uuid.uuid4())
@@ -968,8 +978,8 @@ class GuardianUpdate(BaseModel):
     idNumber: str | None = Field(None, description="cedula del acudiente")
     gender: str | None = Field(None, description="femenino|masculino|otro|prefiere_no_decir")
     relationship: str | None = Field(
-        None, description="Parentesco, **en inglés**: `mother`, `father`, `guardian` o "
-                          "`grandparent`. Otro valor responde `422`.", examples=["mother"])
+        None, description="Parentesco: `madre`, `padre`, `tutor`, `abuelo` u `otro`. "
+                          "Otro valor responde `422`.", examples=["madre"])
     status: str | None = Field(None, description="`active`, `suspended` o `inactive`.")
     plan: str | None = Field(None, description="free | nombre real (1_hijo, 2_hijos…) | etiquetas viejas")
     billingCycle: str | None = Field(None, description="monthly|annual (def. monthly)")
@@ -995,7 +1005,9 @@ def guardian_update(gid: IdAcudiente, body: GuardianUpdate):
     if body.relationship is not None:
         rel = REL_IN.get(body.relationship.lower())
         if not rel:
-            raise HTTPException(status_code=422, detail="relationship must be mother|father|guardian|grandparent.")
+            raise HTTPException(
+                status_code=422,
+                detail="relationship must be madre|padre|tutor|abuelo|otro.")
         gsets.append("relationship_type=%s"); gargs.append(rel)
     if body.insuranceId is not None:
         gsets.append("insurance_company_id=%s"); gargs.append(body.insuranceId or None)
@@ -1945,9 +1957,8 @@ class PortalMeUpdate(BaseModel):
     # mostraba campos de solo lectura sin motivo. El telefono si sigue fuera (es su
     # identidad en WhatsApp) y el plan y el estado tambien (no son decision suya).
     relationship: str | None = Field(
-        None, description="Parentesco con sus hijos, **en inglés**: `mother`, `father`, "
-                          "`guardian` o `grandparent`. Otro valor responde `422`. "
-                          "(Ojo: `gender`, en cambio, va en español.)", examples=["mother"])
+        None, description="Parentesco con sus hijos: `madre`, `padre`, `tutor`, `abuelo` "
+                          "u `otro`.", examples=["madre"])
     insuranceId: int | None = Field(
         None, description="Id de su aseguradora, de `GET /api/insurances`.")
     policyNumber: str | None = Field(
@@ -2911,7 +2922,7 @@ _WINE = colors.HexColor("#6B1E33")
 _INK = colors.HexColor("#2B1B21")
 _MUTED = colors.HexColor("#8B7A80")
 _LINE = colors.HexColor("#E7DCD6")
-# El documento es clínico y en español: el parentesco no puede salir en inglés como en el API.
+# Etiquetas para el PDF: el valor guardado ya viene en español, esto solo lo capitaliza.
 _REL_ES = {"madre": "Madre", "padre": "Padre", "tutor": "Tutor/a", "abuelo": "Abuelo/a", "otro": "Otro"}
 
 _SALUDOS = {"hola", "holaa", "holaaa", "buenas", "buenos", "dias", "días", "tardes", "noches",
