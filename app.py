@@ -1747,6 +1747,112 @@ def portal_payments(gid: str = Depends(require_guardian)):
     return [_payment_row(r) for r in rows]
 
 
+# ── Portal: ESCRITURA (acotada al propio acudiente) ──────────────────────────
+# Leer ya estaba resuelto; editar no existia, y la salida facil era darle
+# `dashboard_access` al acudiente. No sirve: esa bandera abre los ~70 endpoints de
+# operacion, que no comprueban el rol del token -- un acudiente veria a las demas
+# familias. Lo correcto es esto: las mismas operaciones, pero verificando en cada
+# llamada que la fila le pertenece al `gid` del token.
+
+def _hijo_propio(gid: str, pid: str) -> None:
+    """Aborta si ese paciente no cuelga del acudiente autenticado."""
+    if not _q("SELECT 1 FROM guardian_dependent WHERE guardian_id=%s AND dependent_id=%s",
+              (gid, pid)):
+        # 404 y no 403: no confirmamos que el id exista para otra familia.
+        raise HTTPException(status_code=404, detail="Patient not found.")
+
+
+def _cupo_hijos(gid: str) -> int | None:
+    """Cuantos hijos permite el plan vigente. None = sin tope (cuenta sin plan)."""
+    r = _q("""SELECT sp.max_dependents FROM payments p
+              JOIN subscription_plans sp ON sp.id = p.plan_id
+              JOIN guardians g ON g.user_id = p.user_id
+              WHERE g.id=%s AND p.status='confirmed'
+              ORDER BY p.confirmed_at DESC LIMIT 1""", (gid,))
+    return r[0]["max_dependents"] if r else None
+
+
+class PortalMeUpdate(BaseModel):
+    """Lo que el acudiente puede cambiar de si mismo.
+
+    Deliberadamente NO incluye telefono, estado ni plan: el telefono es su identidad
+    en WhatsApp y los otros dos son decisiones del negocio, no suyas.
+    """
+    name: str | None = None
+    email: str | None = None
+    country: str | None = None
+    city: str | None = None
+    province: str | None = None
+    address: str | None = None
+    idNumber: str | None = None
+    gender: str | None = None
+
+
+@app.patch("/portal/me")
+def portal_update_me(body: PortalMeUpdate, gid: str = Depends(require_guardian)):
+    """El acudiente edita sus propios datos."""
+    guardian_update(gid, GuardianUpdate(**body.model_dump()))
+    return portal_me(gid)
+
+
+class PortalChildCreate(BaseModel):
+    name: str
+    birthDate: str
+    weightKg: float | None = None
+    bloodType: str | None = None
+    conditions: list[str] | None = None
+    allergies: list[str] | None = None
+    idNumber: str | None = None
+    school: str | None = None
+
+
+@app.post("/portal/children", status_code=201)
+def portal_child_create(body: PortalChildCreate, gid: str = Depends(require_guardian)):
+    """El acudiente agrega un hijo, dentro del cupo de su plan."""
+    cupo = _cupo_hijos(gid)
+    if cupo is not None:
+        actuales = _q("SELECT COUNT(*) n FROM guardian_dependent WHERE guardian_id=%s", (gid,))
+        if actuales[0]["n"] >= cupo:
+            raise HTTPException(
+                status_code=409,
+                detail=f"Your plan covers {cupo} child(ren). Upgrade to add another.")
+    creado = patient_create(PatientCreate(guardianId=gid, **body.model_dump(
+        exclude={"idNumber", "school"})))
+    # patient_create no acepta cedula ni colegio: se aplican aparte.
+    if body.idNumber or body.school:
+        patient_update(creado["id"], PatientUpdate(idNumber=body.idNumber, school=body.school))
+        creado = patient_get(creado["id"])
+    return creado
+
+
+@app.patch("/portal/children/{pid}")
+def portal_child_update(pid: str, body: PatientUpdate, gid: str = Depends(require_guardian)):
+    """El acudiente edita a UN hijo suyo. Reusa la misma validacion del tablero."""
+    _hijo_propio(gid, pid)
+    return patient_update(pid, body)
+
+
+@app.get("/portal/chats/{sid}")
+def portal_chat_messages(sid: str, gid: str = Depends(require_guardian)):
+    """Los mensajes de UNA conversacion suya. `/portal/chats` solo trae el resumen."""
+    ses = _q("""SELECT cs.id, cs.summary, cs.opened_at, cs.closed_at, d.full_name AS patient
+                FROM chat_sessions cs LEFT JOIN dependents d ON d.id=cs.dependent_id
+                WHERE cs.id=%s AND cs.guardian_id=%s""", (sid, gid))
+    if not ses:
+        raise HTTPException(status_code=404, detail="Chat not found.")
+    msgs = _q("""SELECT sender_role, content, created_at FROM messages
+                 WHERE session_id=%s ORDER BY created_at""", (sid,))
+    return {
+        "id": ses[0]["id"], "patient": ses[0]["patient"] or "",
+        "aiSummary": ses[0]["summary"] or None,
+        "startedAt": _clean(ses[0]["opened_at"]) if ses[0]["opened_at"] else "",
+        "closedAt": _clean(ses[0]["closed_at"]) if ses[0]["closed_at"] else None,
+        "messages": [{"from": "guardian" if m["sender_role"] in ("user", "guardian") else "lucera",
+                      "text": m["content"],
+                      "at": _clean(m["created_at"]) if m["created_at"] else ""} for m in msgs],
+    }
+
+
 # ═════════════════════════════════════════════════════════════════════════════
 # BACKLOG DEL TABLERO — agregaciones nuevas
 #
