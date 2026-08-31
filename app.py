@@ -883,8 +883,8 @@ class GuardianCreate(BaseModel):
     email: str = Field(..., description="Correo. Único en el sistema.",
                        examples=["ana@correo.com"])
     relationship: str | None = Field(
-        None, description="Parentesco: `madre`, `padre`, `tutor`, `abuelo`, `otro`.",
-        examples=["madre"])
+        None, description="Parentesco, **en inglés**: `mother`, `father`, `guardian` o `grandparent`. Un valor desconocido no falla aquí: se guarda como `guardian`.",
+        examples=["mother"])
     country: str | None = Field(None, description="País de residencia.", examples=["Panamá"])
     city: str | None = Field(None, description="Ciudad.", examples=["Ciudad de Panamá"])
     province: str | None = Field(None, description="Provincia o departamento.")
@@ -967,7 +967,9 @@ class GuardianUpdate(BaseModel):
     address: str | None = Field(None, description="dirección del acudiente")
     idNumber: str | None = Field(None, description="cedula del acudiente")
     gender: str | None = Field(None, description="femenino|masculino|otro|prefiere_no_decir")
-    relationship: str | None = Field(None, description="Parentesco: `madre`, `padre`, `tutor`, `abuelo`, `otro`.")
+    relationship: str | None = Field(
+        None, description="Parentesco, **en inglés**: `mother`, `father`, `guardian` o "
+                          "`grandparent`. Otro valor responde `422`.", examples=["mother"])
     status: str | None = Field(None, description="`active`, `suspended` o `inactive`.")
     plan: str | None = Field(None, description="free | nombre real (1_hijo, 2_hijos…) | etiquetas viejas")
     billingCycle: str | None = Field(None, description="monthly|annual (def. monthly)")
@@ -1939,6 +1941,19 @@ class PortalMeUpdate(BaseModel):
     idNumber: str | None = Field(None, description="Su cédula o documento.")
     gender: str | None = Field(None, description="`femenino`, `masculino`, `otro` o "
                                                  "`prefiere_no_decir`.")
+    # Estos tres los DEVUELVE `GET /portal/me` pero no se podian editar: el portal
+    # mostraba campos de solo lectura sin motivo. El telefono si sigue fuera (es su
+    # identidad en WhatsApp) y el plan y el estado tambien (no son decision suya).
+    relationship: str | None = Field(
+        None, description="Parentesco con sus hijos, **en inglés**: `mother`, `father`, "
+                          "`guardian` o `grandparent`. Otro valor responde `422`. "
+                          "(Ojo: `gender`, en cambio, va en español.)", examples=["mother"])
+    insuranceId: int | None = Field(
+        None, description="Id de su aseguradora, de `GET /api/insurances`.")
+    policyNumber: str | None = Field(
+        None, description="Número de su póliza. Ojo con la asimetría: se **manda** plano, "
+                          "pero en la respuesta vuelve dentro de "
+                          "`insurance.policyNumber`, no en la raíz.")
 
 
 @app.patch("/portal/me", tags=["Portal del acudiente"])
