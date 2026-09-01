@@ -22,13 +22,13 @@ from pathlib import Path
 
 import jwt
 import pymysql
-from typing import Annotated
+from typing import Annotated, Generic, TypeVar
 
 from fastapi import Depends, FastAPI, Header, HTTPException, Path, Query, Request, Security
 from fastapi.security import APIKeyHeader, HTTPBearer
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import HTMLResponse, Response
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 from reportlab.lib import colors
 from reportlab.lib.enums import TA_JUSTIFY, TA_LEFT
 from reportlab.lib.pagesizes import A4
@@ -418,6 +418,484 @@ def _solo_operadores(claims: dict = Depends(require_auth)) -> dict:
     return claims
 
 
+# ── Formas de respuesta (solo documentacion) ─────────────────────────────────
+# Se declaran con `responses={200: {"model": X}}` y NO con `response_model`: este
+# ultimo SERIALIZA a traves del modelo y descarta cualquier campo que no este en el,
+# asi que una omision mia le borraria datos al front sin avisar. Con `responses` el
+# /docs y el generador de clientes ven el mismo esquema y la respuesta sale intacta.
+T = TypeVar("T")
+
+
+class Sobre(BaseModel, Generic[T]):
+    """Envoltura de los listados paginados."""
+    items: list[T]
+    page: int
+    page_limit: int
+    total: int
+    total_pages: int
+
+
+class SeguroRef(BaseModel):
+    id: int
+    name: str
+    policyNumber: str | None = None
+
+
+class HijoFicha(BaseModel):
+    id: str
+    name: str
+    birthDate: str
+    idNumber: str | None = None
+    school: str | None = None
+    createdAt: str
+    updatedAt: str | None = None
+    bloodType: str | None = None
+    weightKg: float | None = None
+    conditions: list[str] = []
+    allergies: list[str] = []
+    insurance: SeguroRef | None = None
+
+
+class AcudienteFicha(BaseModel):
+    id: str
+    phone: str
+    email: str
+    name: str
+    accountCode: str | None = None
+    gender: str | None = None
+    idNumber: str | None = None
+    relationship: str = Field(..., description="madre | padre | tutor | abuelo | otro")
+    country: str | None = None
+    province: str | None = None
+    address: str | None = None
+    city: str | None = None
+    status: str
+    plan: str
+    planTier: str
+    planMaxDependents: int | None = None
+    insurance: SeguroRef | None = None
+    registeredAt: str
+    updatedAt: str | None = None
+    subscriptionExpiresAt: str | None = None
+    subscriptionState: str = Field(..., description="none | active | expired")
+    portalEnabled: bool
+    chats: int
+    children: list[HijoFicha] = []
+
+
+class PacienteFicha(BaseModel):
+    id: str
+    name: str
+    nationalId: str
+    age: int
+    birthDate: str
+    bloodType: str | None = None
+    weightKg: float | None = None
+    conditions: list[str] = []
+    allergies: list[str] = []
+    insurance: SeguroRef | None = None
+    idNumber: str | None = None
+    school: str | None = None
+    guardianId: str
+    guardian: str
+    phone: str
+    accountCode: str | None = None
+    address: str | None = None
+    status: str
+    chats: int
+    lastConsultation: str | None = None
+
+
+class MensajeChat(BaseModel):
+    role: str
+    text: str
+    time: str
+    type: str
+    alerts: list[str] = []
+
+
+class ChatFicha(BaseModel):
+    id: str
+    guardian: str
+    patient: str
+    phone: str
+    guardianId: str
+    patientId: str | None = None
+    accountCode: str | None = None
+    insurance: str | None = None
+    triage: str
+    derivation: str = Field(..., description="home | appointment | emergency")
+    attentionType: str
+    aiSummary: str | None = None
+    rating: int | None = None
+    doctorNote: str | None = None
+    reviewedBy: str | None = None
+    reviewedAt: str | None = None
+    techFailure: bool
+    lastMessage: str | None = None
+    time: str | None = None
+    startedAt: str
+    closedAt: str | None = None
+    messages: list[MensajeChat] = []
+    status: str
+
+
+class PagoFicha(BaseModel):
+    id: str
+    guardian: str
+    amount: float
+    method: str
+    plan: str
+    status: str
+    date: str
+    providerResponse: str | None = None
+    paymentType: str | None = None
+
+
+class PlanFicha(BaseModel):
+    id: str
+    name: str
+    maxDependents: int
+    priceMonthly: float
+    priceAnnual: float
+
+
+class UsuarioInterno(BaseModel):
+    id: str
+    name: str
+    email: str
+    phone: str | None = None
+    role: str
+    dashboardRole: str
+    status: str
+    isActive: bool
+    dashboardAccess: bool
+    hasPassword: bool
+    mustChangePassword: bool
+    idNumber: str | None = None
+    licenseId: str | None = None
+    specialty: str | None = None
+    createdAt: str
+
+
+class CuentaFicha(BaseModel):
+    id: str
+    accountCode: str | None = None
+    guardian: str
+    idNumber: str | None = None
+    gender: str | None = None
+    phone: str
+    email: str
+    country: str | None = None
+    province: str | None = None
+    city: str | None = None
+    address: str | None = None
+    insurance: str | None = None
+    status: str
+    plan: str
+    paymentStatus: str | None = None
+    children: int
+    chats: int
+    createdAt: str
+    subscriptionExpiresAt: str | None = None
+    subscriptionState: str
+
+
+class Aseguradora(BaseModel):
+    id: int
+    name: str
+
+
+class PaisGeo(BaseModel):
+    code: str
+    name: str
+    phoneCode: str | None = None
+    states: list[str] = []
+
+
+class PortalChatResumen(BaseModel):
+    id: str
+    patient: str
+    triage: str
+    attentionType: str
+    aiSummary: str | None = None
+    rating: int | None = None
+    startedAt: str
+    closedAt: str | None = None
+    status: str
+
+
+class MensajePortal(BaseModel):
+    # `from` es palabra reservada en Python; el JSON sí sale con ese nombre.
+    desde: str = Field(..., alias="from", description="guardian | lucera")
+    text: str
+    at: str
+    model_config = ConfigDict(populate_by_name=True)
+
+
+class PortalChatDetalle(BaseModel):
+    id: str
+    patient: str
+    aiSummary: str | None = None
+    startedAt: str
+    closedAt: str | None = None
+    messages: list[MensajePortal] = []
+
+
+class SesionTablero(BaseModel):
+    """Lo que devuelven `/auth/login` y `/auth/refresh`."""
+    access_token: str
+    refresh_token: str | None = None
+    token_type: str = "Bearer"
+    expires_in: int
+    user: dict | None = None
+
+
+class Borrado(BaseModel):
+    deleted: bool
+    id: str
+
+
+class Hecho(BaseModel):
+    ok: bool
+
+
+# ── Métricas y catálogos ─────────────────────────────────────────────────────
+class Serie(BaseModel):
+    """Punto de una serie mensual."""
+    month: str
+    value: int
+
+
+class Corte(BaseModel):
+    """Un corte con nombre: por plan, por país, por aseguradora…"""
+    name: str | None = None
+    plan: str | None = None
+    value: int
+
+
+class StatsCuentas(BaseModel):
+    byMonth: list[Serie] = []
+    byPlan: list[Corte] = []
+    byInsurance: list[Corte] = []
+    byCountry: list[Corte] = []
+    byGender: list[Corte] = []
+
+
+class TipoAtencion(BaseModel):
+    type: str
+    value: int
+    percent: float | None = None
+
+
+class StatsChats(BaseModel):
+    total: int
+    byState: dict
+    byMonth: list[Serie] = []
+    byDerivation: list[TipoAtencion] = []
+    derivationCurves: list[dict] = []
+
+
+class TramoEdad(BaseModel):
+    range: str
+    value: int
+
+
+class StatsHijos(BaseModel):
+    total: int
+    perAccountAvg: float
+    byMonth: list[Serie] = []
+    byAge: list[TramoEdad] = []
+
+
+class PuntoCsat(BaseModel):
+    week: str
+    csat: float
+
+
+class FilaAseguradora(BaseModel):
+    insurance: str
+    home: int
+    appointment: int
+    emergency: int
+    total: int
+
+
+class StatsAseguradora(BaseModel):
+    items: list[FilaAseguradora] = []
+    totals: dict
+    filters: dict
+
+
+class StatsRendimiento(BaseModel):
+    """Tiempos y tasas del embudo. `timeToFirstConsultMin` es el «time to first consult»."""
+    timeToFirstConsultMin: float | None = None
+    timeToResolutionMin: float | None = None
+    activeAccountRate: float | None = None
+    churnRate: float | None = None
+    freeLimitNoConversion: int | None = None
+    techFailureSessions: int | None = None
+    techFailureRate: float | None = None
+    model_config = ConfigDict(extra="allow")
+
+
+class StatsPlan(BaseModel):
+    plan: str
+    users: int
+    color: str | None = None
+
+
+class StatsResumen(BaseModel):
+    accounts: dict
+    revenueUsd: float
+    csat: float
+    usage: dict
+    safety: dict
+    model_config = ConfigDict(extra="allow")
+
+
+class NivelTriaje(BaseModel):
+    level: str
+    value: int
+    color: str | None = None
+
+
+class UsoPorDia(BaseModel):
+    date: str
+    calls: int
+    tokens: int
+    costUsd: float
+
+
+class UsoPorUsuario(BaseModel):
+    guardian: str
+    phone: str | None = None
+    calls: int
+    tokens: int
+    costUsd: float
+
+
+class UsoResumen(BaseModel):
+    calls: int
+    inputTokens: int
+    outputTokens: int
+    totalTokens: int
+    costUsd: float
+    avgLatencyMs: int | None = None
+
+
+class Centro(BaseModel):
+    id: str
+    name: str
+    type: str | None = None
+    city: str | None = None
+    address: str | None = None
+    phone: str | None = None
+    tier: str | None = None
+    hours: str | None = None
+    recommended: bool = False
+
+
+class Especialidad(BaseModel):
+    id: int
+    name: str
+
+
+class EnlacePortal(BaseModel):
+    guardianId: str
+    name: str
+    phone: str
+    hasPassword: bool
+    token: str
+    url: str | None = Field(None, description="Nula si falta configurar PORTAL_REGISTER_URL.")
+
+
+class EstadoBot(BaseModel):
+    bot: str
+    ready: bool
+    checks: dict
+    latency_ms: int | None = None
+    checked_at: str | None = None
+    url: str | None = None
+
+
+# ── Contraseñas y enlaces ────────────────────────────────────────────────────
+class ClaveFijada(BaseModel):
+    ok: bool
+    id: str
+
+
+class ClaveTemporal(BaseModel):
+    """Respuesta de los restablecimientos. La clave viene UNA sola vez."""
+    ok: bool
+    id: str
+    name: str | None = None
+    phone: str | None = None
+    email: str | None = None
+    temporaryPassword: str = Field(..., description="Solo se ve aquí; no se puede recuperar.")
+    derivedFromIdNumber: bool | None = Field(
+        None, description="Solo operadores: la temporal se derivó de su cédula, así que el "
+                          "front puede decir «es Lucera + su cédula» sin mostrarla.")
+    mustChangePassword: bool = True
+
+
+class ClaveCambiada(BaseModel):
+    """Cambio de la propia contraseña. Trae tokens NUEVOS: hay que guardarlos, o el 403
+    por `mustChangePassword` sigue apareciendo con el token viejo."""
+    ok: bool
+    mustChangePassword: bool = False
+    access_token: str | None = None
+    refresh_token: str | None = None
+    token_type: str | None = "Bearer"
+    expires_in: int | None = None
+    id: str | None = None
+
+
+class EnlaceRegistro(BaseModel):
+    token: str = Field(..., description="Va en el CUERPO de /portal/register, no en la URL.")
+    url: str | None = Field(None, description="Nula si falta configurar PORTAL_REGISTER_URL.")
+    expiresInHours: int
+
+
+class RegistroHecho(BaseModel):
+    ok: bool
+    guardianId: str
+
+
+class RegistroInfo(BaseModel):
+    """A quién pertenece un enlace de registro, para saludarlo por su nombre."""
+    guardianId: str
+    name: str | None = None
+    phone: str | None = None
+    model_config = ConfigDict(extra="allow")
+
+
+class RolInterno(BaseModel):
+    value: str
+    label: str
+    dashboardRole: str | None = None
+
+
+class ListaRoles(BaseModel):
+    items: list[RolInterno] = []
+
+
+class NotaChat(BaseModel):
+    id: str
+    note: str | None = None
+    reviewedBy: str | None = None
+    model_config = ConfigDict(extra="allow")
+
+
+class PaginaVacia(BaseModel):
+    """Módulos que aún no tienen datos: devuelven la envoltura con `items` vacío."""
+    items: list[dict] = []
+    page: int
+    page_limit: int
+    total: int
+    total_pages: int
+
+
 class LoginIn(BaseModel):
     """Credenciales del tablero (operadores)."""
     email: str = Field(..., description="Correo del operador. Debe tener `dashboard_access = 1`.",
@@ -536,7 +1014,7 @@ IdEspecialidad = Annotated[int, Path(description="Id numérico de la especialida
 app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_methods=["*"], allow_headers=["*"])
 
 
-@app.post("/auth/login", tags=["Autenticación"])
+@app.post("/auth/login", tags=["Autenticación"], responses={200: {"model": SesionTablero}})
 def login(body: LoginIn) -> dict:
     """Login del tablero. Autentica contra la tabla `users` (no contra variables de entorno)."""
     sub = (body.email or "").lower().strip()
@@ -564,7 +1042,7 @@ def login(body: LoginIn) -> dict:
     }
 
 
-@app.post("/auth/guardian/login", tags=["Autenticación"])
+@app.post("/auth/guardian/login", tags=["Autenticación"], responses={200: {"model": SesionTablero}})
 def guardian_login(body: GuardianLoginIn) -> dict:
     """Portal del acudiente: login con TELEFONO O CORREO + contrasena. Devuelve un token
     con scope='portal' que SOLO puede leer los datos del propio acudiente (no PII de otros).
@@ -605,7 +1083,7 @@ def guardian_login(body: GuardianLoginIn) -> dict:
     }
 
 
-@app.post("/auth/refresh", tags=["Autenticación"])
+@app.post("/auth/refresh", tags=["Autenticación"], responses={200: {"model": SesionTablero}})
 def refresh(body: RefreshIn) -> dict:
     try:
         c = jwt.decode(body.refresh_token, JWT_SECRET, algorithms=["HS256"])
@@ -628,7 +1106,7 @@ def refresh(body: RefreshIn) -> dict:
     }
 
 
-@app.get("/health", tags=["Servicio"])
+@app.get("/health", tags=["Servicio"], responses={200: {"model": Hecho}})
 def health():
     try:
         _q("SELECT 1")
@@ -637,7 +1115,7 @@ def health():
         raise HTTPException(status_code=503, detail=f"db: {e}")
 
 
-@app.get("/api/bot-status", dependencies=[Depends(require_auth)], tags=["Operación"])
+@app.get("/api/bot-status", dependencies=[Depends(require_auth)], tags=["Operación"], responses={200: {"model": EstadoBot}})
 def bot_status():
     """Estado del bot de WhatsApp para el tablero: hace ping al /ready del bot.
 
@@ -863,7 +1341,7 @@ _G_SELECT = """SELECT g.id, g.full_name AS name, g.relationship_type AS rel, g.c
     LEFT JOIN insurance_companies ic ON ic.id=g.insurance_company_id"""
 
 
-@app.get("/api/guardians", tags=["Acudientes"])
+@app.get("/api/guardians", tags=["Acudientes"], responses={200: {"model": Sobre[AcudienteFicha]}})
 def guardians(claims: dict = Depends(require_auth), page: Pagina = 1,
               page_limit: PorPagina = 20, q: Busqueda = None):
     page, page_limit, off = _pag(page, page_limit)
@@ -999,7 +1477,7 @@ class GuardianCreate(BaseModel):
                           "acudiente tendrá que fijarla desde su enlace de registro.")
 
 
-@app.post("/api/guardians", dependencies=[Depends(_solo_operadores)], status_code=201, tags=["Acudientes"])
+@app.post("/api/guardians", dependencies=[Depends(_solo_operadores)], status_code=201, tags=["Acudientes"], responses={200: {"model": AcudienteFicha}})
 def guardian_create(body: GuardianCreate):
     """Crea un acudiente desde el tablero, con su clave del portal.
 
@@ -1040,7 +1518,7 @@ def guardian_create(body: GuardianCreate):
     return creado
 
 
-@app.get("/api/guardians/{gid}", tags=["Acudientes"])
+@app.get("/api/guardians/{gid}", tags=["Acudientes"], responses={200: {"model": AcudienteFicha}})
 def guardian_get(gid: IdAcudiente, claims: dict = Depends(require_auth)):
     _exigir_ficha_propia(claims, gid)
     return _one_guardian(gid)
@@ -1065,7 +1543,7 @@ class GuardianUpdate(BaseModel):
     policyNumber: str | None = Field(None, description="Número de póliza.")
 
 
-@app.patch("/api/guardians/{gid}", tags=["Acudientes"])
+@app.patch("/api/guardians/{gid}", tags=["Acudientes"], responses={200: {"model": AcudienteFicha}})
 def guardian_update(gid: IdAcudiente, body: GuardianUpdate,
                     claims: dict = Depends(require_auth)):
     _exigir_ficha_propia(claims, gid)
@@ -1128,7 +1606,7 @@ def guardian_update(gid: IdAcudiente, body: GuardianUpdate,
     return _one_guardian(gid)
 
 
-@app.delete("/api/guardians/{gid}", dependencies=[Depends(_solo_operadores)], tags=["Acudientes"])
+@app.delete("/api/guardians/{gid}", dependencies=[Depends(_solo_operadores)], tags=["Acudientes"], responses={200: {"model": Borrado}})
 def guardian_delete(gid: IdAcudiente):
     g = _q("SELECT user_id FROM guardians g WHERE g.id=%s", (gid,))
     if not g:
@@ -1143,7 +1621,7 @@ class PortalPassword(BaseModel):
                           description="Nueva contraseña del portal. Mínimo 6 caracteres.")
 
 
-@app.post("/api/guardians/{gid}/portal-password", dependencies=[Depends(_solo_operadores)], tags=["Acudientes"])
+@app.post("/api/guardians/{gid}/portal-password", dependencies=[Depends(_solo_operadores)], tags=["Acudientes"], responses={200: {"model": ClaveFijada}})
 def guardian_set_portal_password(gid: IdAcudiente, body: PortalPassword):
     """Admin: fija/actualiza la contraseña del portal del acudiente (habilita su login)."""
     g = _q("SELECT user_id FROM guardians WHERE id=%s", (gid,))
@@ -1156,7 +1634,7 @@ def guardian_set_portal_password(gid: IdAcudiente, body: PortalPassword):
     return {"ok": True, "id": gid}
 
 
-@app.post("/api/guardians/{gid}/portal-password/reset", dependencies=[Depends(_solo_operadores)], tags=["Acudientes"])
+@app.post("/api/guardians/{gid}/portal-password/reset", dependencies=[Depends(_solo_operadores)], tags=["Acudientes"], responses={200: {"model": ClaveTemporal}})
 def guardian_reset_portal_password(gid: IdAcudiente):
     """RESTABLECE la clave del portal: el API genera una, la devuelve UNA vez y marca la
     cuenta para que el acudiente la cambie al entrar.
@@ -1188,7 +1666,7 @@ class UserOwnPassword(BaseModel):
                              description="La nueva. Mínimo 6 caracteres y distinta de la actual.")
 
 
-@app.post("/portal/password", tags=["Portal del acudiente"])
+@app.post("/portal/password", tags=["Portal del acudiente"], responses={200: {"model": ClaveCambiada}})
 def portal_change_own_password(body: UserOwnPassword, gid: str = Depends(require_guardian)):
     """El ACUDIENTE cambia su propia clave, verificando la actual.
 
@@ -1217,7 +1695,7 @@ def portal_change_own_password(body: UserOwnPassword, gid: str = Depends(require
     }
 
 
-@app.post("/api/guardians/{gid}/portal-link", dependencies=[Depends(_solo_operadores)], tags=["Acudientes"])
+@app.post("/api/guardians/{gid}/portal-link", dependencies=[Depends(_solo_operadores)], tags=["Acudientes"], responses={200: {"model": EnlaceRegistro}})
 def guardian_portal_link(gid: IdAcudiente):
     """Admin: emite un link firmado al formulario de registro del portal (para que el
     acudiente fije su propia contraseña). El bot puede emitir el mismo token con el secreto
@@ -1232,7 +1710,7 @@ def guardian_portal_link(gid: IdAcudiente):
     return {"token": token, "url": url, "expiresInHours": REGISTER_TTL // 3600}
 
 
-@app.get("/api/portal-links", dependencies=[Depends(_solo_operadores)], tags=["Acudientes"])
+@app.get("/api/portal-links", dependencies=[Depends(_solo_operadores)], tags=["Acudientes"], responses={200: {"model": Sobre[EnlacePortal]}})
 def portal_links_bulk(
     page: Pagina = 1,
     page_limit: PorPagina = 50,
@@ -1296,7 +1774,7 @@ def _patient_row(r: dict) -> dict:
     }
 
 
-@app.get("/api/patients", tags=["Pacientes"])
+@app.get("/api/patients", tags=["Pacientes"], responses={200: {"model": Sobre[PacienteFicha]}})
 def patients(claims: dict = Depends(require_auth), page: Pagina = 1,
              page_limit: PorPagina = 20, q: Busqueda = None):
     page, page_limit, off = _pag(page, page_limit)
@@ -1315,7 +1793,7 @@ def patients(claims: dict = Depends(require_auth), page: Pagina = 1,
     return _envelope([_patient_row(r) for r in rows], page, page_limit, total)
 
 
-@app.get("/api/patients/{pid}", dependencies=[Depends(require_auth)], tags=["Pacientes"])
+@app.get("/api/patients/{pid}", dependencies=[Depends(require_auth)], tags=["Pacientes"], responses={200: {"model": PacienteFicha}})
 def patient_get(pid: IdPaciente, claims: dict = Depends(require_auth)):
     _exigir_propio(claims, pid)
     return _ficha_paciente(pid)
@@ -1362,7 +1840,7 @@ class PatientUpdate(BaseModel):
     school: str | None = Field(None, description="Centro educativo.")
 
 
-@app.post("/api/patients", dependencies=[Depends(require_auth)], status_code=201, tags=["Pacientes"])
+@app.post("/api/patients", dependencies=[Depends(require_auth)], status_code=201, tags=["Pacientes"], responses={200: {"model": PacienteFicha}})
 def patient_create(body: PatientCreate):
     if not _q("SELECT id FROM guardians WHERE id=%s", (body.guardianId,)):
         raise HTTPException(status_code=404, detail="guardianId not found.")
@@ -1385,7 +1863,7 @@ def patient_create(body: PatientCreate):
     return _ficha_paciente(pid)
 
 
-@app.patch("/api/patients/{pid}", tags=["Pacientes"])
+@app.patch("/api/patients/{pid}", tags=["Pacientes"], responses={200: {"model": PacienteFicha}})
 def patient_update(pid: IdPaciente, body: PatientUpdate,
                    claims: dict = Depends(require_auth)):
     _exigir_propio(claims, pid)
@@ -1426,7 +1904,7 @@ def _aplicar_patch_paciente(pid: str, body: PatientUpdate) -> dict:
     return _ficha_paciente(pid)
 
 
-@app.delete("/api/patients/{pid}", tags=["Pacientes"])
+@app.delete("/api/patients/{pid}", tags=["Pacientes"], responses={200: {"model": Borrado}})
 def patient_delete(pid: IdPaciente, claims: dict = Depends(require_auth)):
     """Da de BAJA al paciente. No borra nada.
 
@@ -1443,7 +1921,7 @@ def patient_delete(pid: IdPaciente, claims: dict = Depends(require_auth)):
 
 
 # ── Chats (paginated) ────────────────────────────────────────────────────────
-@app.get("/api/chats", tags=["Conversaciones"])
+@app.get("/api/chats", tags=["Conversaciones"], responses={200: {"model": Sobre[ChatFicha]}})
 def chats(
     claims: dict = Depends(require_auth),
     page: Pagina = 1,
@@ -1550,7 +2028,7 @@ def chats(
 
 
 # ── Plans (read catalog) ─────────────────────────────────────────────────────
-@app.get("/api/plans", dependencies=[Depends(require_auth)], tags=["Pagos y planes"])
+@app.get("/api/plans", dependencies=[Depends(require_auth)], tags=["Pagos y planes"], responses={200: {"model": Sobre[PlanFicha]}})
 def plans(page: Pagina = 1, page_limit: PorPagina = 50):
     page, page_limit, off = _pag(page, page_limit)
     total = _q("SELECT COUNT(*) c FROM subscription_plans WHERE active=1")[0]["c"]
@@ -1577,7 +2055,7 @@ def _payment_row(r: dict) -> dict:
     }
 
 
-@app.get("/api/payments", dependencies=[Depends(require_auth)], tags=["Pagos y planes"])
+@app.get("/api/payments", dependencies=[Depends(require_auth)], tags=["Pagos y planes"], responses={200: {"model": Sobre[PagoFicha]}})
 def payments(page: Pagina = 1, page_limit: PorPagina = 20):
     page, page_limit, off = _pag(page, page_limit)
     total = _q("SELECT COUNT(*) c FROM payments")[0]["c"]
@@ -1585,7 +2063,7 @@ def payments(page: Pagina = 1, page_limit: PorPagina = 20):
     return _envelope([_payment_row(r) for r in rows], page, page_limit, total)
 
 
-@app.get("/api/payments/{pid}", dependencies=[Depends(require_auth)], tags=["Pagos y planes"])
+@app.get("/api/payments/{pid}", dependencies=[Depends(require_auth)], tags=["Pagos y planes"], responses={200: {"model": PagoFicha}})
 def payment_get(pid: IdPaciente):
     rows = _q(f"{_PAY_SELECT} WHERE p.id=%s OR p.provider_txn_id=%s", (pid, pid))
     if not rows:
@@ -1603,7 +2081,7 @@ class PaymentCreate(BaseModel):
     txnId: str | None = Field(None, description="Referencia de la pasarela.")
 
 
-@app.post("/api/payments", dependencies=[Depends(require_auth)], status_code=201, tags=["Pagos y planes"])
+@app.post("/api/payments", dependencies=[Depends(require_auth)], status_code=201, tags=["Pagos y planes"], responses={200: {"model": PagoFicha}})
 def payment_create(body: PaymentCreate):
     g = _q("SELECT user_id FROM guardians WHERE id=%s", (body.guardianId,))
     if not g:
@@ -1642,7 +2120,7 @@ def _center_row(r: dict) -> dict:
             "hours": "24/7", "recommended": bool(r["recommended"])}
 
 
-@app.get("/api/centers", dependencies=[Depends(require_auth)], tags=["Agenda y profesionales"])
+@app.get("/api/centers", dependencies=[Depends(require_auth)], tags=["Agenda y profesionales"], responses={200: {"model": Sobre[Centro]}})
 def centers(page: Pagina = 1, page_limit: PorPagina = 50):
     page, page_limit, off = _pag(page, page_limit)
     total = _q("SELECT COUNT(*) c FROM hospitals WHERE active=1")[0]["c"]
@@ -1658,7 +2136,7 @@ def _one_center(cid: str) -> dict:
     return _center_row(rows[0])
 
 
-@app.get("/api/centers/{cid}", dependencies=[Depends(require_auth)], tags=["Agenda y profesionales"])
+@app.get("/api/centers/{cid}", dependencies=[Depends(require_auth)], tags=["Agenda y profesionales"], responses={200: {"model": Centro}})
 def center_get(cid: IdCentro):
     return _one_center(cid)
 
@@ -1682,7 +2160,7 @@ class CenterUpdate(BaseModel):
     recommended: bool | None = Field(None, description="Si se muestra como recomendado.")
 
 
-@app.post("/api/centers", dependencies=[Depends(require_auth)], status_code=201, tags=["Agenda y profesionales"])
+@app.post("/api/centers", dependencies=[Depends(require_auth)], status_code=201, tags=["Agenda y profesionales"], responses={200: {"model": Centro}})
 def center_create(body: CenterCreate):
     tier = body.tier if body.tier in TIERS else "publico_minsa"
     cid = str(uuid.uuid4())
@@ -1693,7 +2171,7 @@ def center_create(body: CenterCreate):
     return _one_center(cid)
 
 
-@app.patch("/api/centers/{cid}", dependencies=[Depends(require_auth)], tags=["Agenda y profesionales"])
+@app.patch("/api/centers/{cid}", dependencies=[Depends(require_auth)], tags=["Agenda y profesionales"], responses={200: {"model": Centro}})
 def center_update(cid: IdCentro, body: CenterUpdate):
     if not _q("SELECT id FROM hospitals WHERE id=%s", (cid,)):
         raise HTTPException(status_code=404, detail="Center not found.")
@@ -1712,7 +2190,7 @@ def center_update(cid: IdCentro, body: CenterUpdate):
     return _one_center(cid)
 
 
-@app.delete("/api/centers/{cid}", dependencies=[Depends(require_auth)], tags=["Agenda y profesionales"])
+@app.delete("/api/centers/{cid}", dependencies=[Depends(require_auth)], tags=["Agenda y profesionales"], responses={200: {"model": Borrado}})
 def center_delete(cid: IdCentro):
     if not _q("SELECT id FROM hospitals WHERE id=%s", (cid,)):
         raise HTTPException(status_code=404, detail="Center not found.")
@@ -1730,7 +2208,7 @@ class InsuranceUpdate(BaseModel):
     active: bool | None = Field(None, description="Si sigue disponible para elegir.")
 
 
-@app.get("/api/insurances", dependencies=[Depends(require_auth)], tags=["Catálogos"])
+@app.get("/api/insurances", dependencies=[Depends(require_auth)], tags=["Catálogos"], responses={200: {"model": Sobre[Aseguradora]}})
 def insurances(page: Pagina = 1, page_limit: PorPagina = 100):
     page, page_limit, off = _pag(page, page_limit)
     total = _q("SELECT COUNT(*) c FROM insurance_companies WHERE active=1")[0]["c"]
@@ -1738,7 +2216,7 @@ def insurances(page: Pagina = 1, page_limit: PorPagina = 100):
     return _envelope([{"id": r["id"], "name": r["name"]} for r in rows], page, page_limit, total)
 
 
-@app.post("/api/insurances", dependencies=[Depends(require_auth)], status_code=201, tags=["Catálogos"])
+@app.post("/api/insurances", dependencies=[Depends(require_auth)], status_code=201, tags=["Catálogos"], responses={200: {"model": Aseguradora}})
 def insurance_create(body: NameIn):
     def _ins():
         _exec("INSERT INTO insurance_companies (name, active) VALUES (%s,1)", (body.name.strip(),))
@@ -1747,7 +2225,7 @@ def insurance_create(body: NameIn):
     return {"id": r["id"], "name": r["name"]}
 
 
-@app.patch("/api/insurances/{iid}", dependencies=[Depends(require_auth)], tags=["Catálogos"])
+@app.patch("/api/insurances/{iid}", dependencies=[Depends(require_auth)], tags=["Catálogos"], responses={200: {"model": Aseguradora}})
 def insurance_update(iid: IdAseguradora, body: InsuranceUpdate):
     if not _q("SELECT id FROM insurance_companies WHERE id=%s", (iid,)):
         raise HTTPException(status_code=404, detail="Insurance not found.")
@@ -1762,7 +2240,7 @@ def insurance_update(iid: IdAseguradora, body: InsuranceUpdate):
     return {"id": r["id"], "name": r["name"], "active": bool(r["active"])}
 
 
-@app.delete("/api/insurances/{iid}", dependencies=[Depends(require_auth)], tags=["Catálogos"])
+@app.delete("/api/insurances/{iid}", dependencies=[Depends(require_auth)], tags=["Catálogos"], responses={200: {"model": Borrado}})
 def insurance_delete(iid: IdAseguradora):
     if not _q("SELECT id FROM insurance_companies WHERE id=%s", (iid,)):
         raise HTTPException(status_code=404, detail="Insurance not found.")
@@ -1771,12 +2249,12 @@ def insurance_delete(iid: IdAseguradora):
 
 
 # ── Specialties (CRUD) ───────────────────────────────────────────────────────
-@app.get("/api/specialties", dependencies=[Depends(require_auth)], tags=["Agenda y profesionales"])
+@app.get("/api/specialties", dependencies=[Depends(require_auth)], tags=["Agenda y profesionales"], responses={200: {"model": Sobre[Especialidad]}})
 def specialties() -> list[str]:
     return _cached("specialties", 300, lambda: [r["name"] for r in _q("SELECT name FROM specialties ORDER BY name")])
 
 
-@app.get("/api/specialties/all", dependencies=[Depends(require_auth)], tags=["Agenda y profesionales"])
+@app.get("/api/specialties/all", dependencies=[Depends(require_auth)], tags=["Agenda y profesionales"], responses={200: {"model": Sobre[Especialidad]}})
 def specialties_all(page: Pagina = 1, page_limit: PorPagina = 100):
     """Same catalog but with ids, for admin management (create/edit/delete)."""
     page, page_limit, off = _pag(page, page_limit)
@@ -1785,7 +2263,7 @@ def specialties_all(page: Pagina = 1, page_limit: PorPagina = 100):
     return _envelope([{"id": r["id"], "name": r["name"]} for r in rows], page, page_limit, total)
 
 
-@app.post("/api/specialties", dependencies=[Depends(require_auth)], status_code=201, tags=["Agenda y profesionales"])
+@app.post("/api/specialties", dependencies=[Depends(require_auth)], status_code=201, tags=["Agenda y profesionales"], responses={200: {"model": Especialidad}})
 def specialty_create(body: NameIn):
     def _ins():
         _exec("INSERT INTO specialties (name) VALUES (%s)", (body.name.strip(),))
@@ -1795,7 +2273,7 @@ def specialty_create(body: NameIn):
     return {"id": r["id"], "name": r["name"]}
 
 
-@app.patch("/api/specialties/{sid}", dependencies=[Depends(require_auth)], tags=["Agenda y profesionales"])
+@app.patch("/api/specialties/{sid}", dependencies=[Depends(require_auth)], tags=["Agenda y profesionales"], responses={200: {"model": Especialidad}})
 def specialty_update(sid: IdEspecialidad, body: NameIn):
     if not _q("SELECT id FROM specialties WHERE id=%s", (sid,)):
         raise HTTPException(status_code=404, detail="Specialty not found.")
@@ -1804,7 +2282,7 @@ def specialty_update(sid: IdEspecialidad, body: NameIn):
     return {"id": sid, "name": body.name.strip()}
 
 
-@app.delete("/api/specialties/{sid}", dependencies=[Depends(require_auth)], tags=["Agenda y profesionales"])
+@app.delete("/api/specialties/{sid}", dependencies=[Depends(require_auth)], tags=["Agenda y profesionales"], responses={200: {"model": Borrado}})
 def specialty_delete(sid: IdEspecialidad):
     if not _q("SELECT id FROM specialties WHERE id=%s", (sid,)):
         raise HTTPException(status_code=404, detail="Specialty not found.")
@@ -1814,7 +2292,7 @@ def specialty_delete(sid: IdEspecialidad):
 
 
 # ── Usage / consumos (cached) ────────────────────────────────────────────────
-@app.get("/api/usage/summary", dependencies=[Depends(require_auth)], tags=["Métricas"])
+@app.get("/api/usage/summary", dependencies=[Depends(require_auth)], tags=["Métricas"], responses={200: {"model": UsoResumen}})
 def usage_summary():
     def _f():
         r = _q("SELECT COUNT(*) calls, COALESCE(SUM(input_tokens),0) it, COALESCE(SUM(output_tokens),0) ot, "
@@ -1825,7 +2303,7 @@ def usage_summary():
     return _cached("usage:summary", 60, _f)
 
 
-@app.get("/api/usage/by-day", dependencies=[Depends(require_auth)], tags=["Métricas"])
+@app.get("/api/usage/by-day", dependencies=[Depends(require_auth)], tags=["Métricas"], responses={200: {"model": list[UsoPorDia]}})
 def usage_by_day():
     def _f():
         rows = _q("SELECT DATE(created_at) d, COUNT(*) calls, SUM(input_tokens+output_tokens) tokens, "
@@ -1835,7 +2313,7 @@ def usage_by_day():
     return _cached("usage:by-day", 60, _f)
 
 
-@app.get("/api/usage/by-user", dependencies=[Depends(require_auth)], tags=["Métricas"])
+@app.get("/api/usage/by-user", dependencies=[Depends(require_auth)], tags=["Métricas"], responses={200: {"model": list[UsoPorUsuario]}})
 def usage_by_user():
     def _f():
         rows = _q("""SELECT g.full_name AS guardian, u.phone_number AS phone, COUNT(*) calls,
@@ -1849,7 +2327,7 @@ def usage_by_user():
 
 
 # ── Statistics (cached) ──────────────────────────────────────────────────────
-@app.get("/api/stats/kpis", dependencies=[Depends(require_auth)], tags=["Métricas"])
+@app.get("/api/stats/kpis", dependencies=[Depends(require_auth)], tags=["Métricas"], responses={200: {"model": StatsResumen}})
 def kpis():
     def _f():
         active = _q("SELECT COUNT(*) c FROM users WHERE status='active'")[0]["c"]
@@ -1870,7 +2348,7 @@ def kpis():
 _MONTHS = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"]
 
 
-@app.get("/api/stats/sessions-per-month", dependencies=[Depends(require_auth)], tags=["Métricas"])
+@app.get("/api/stats/sessions-per-month", dependencies=[Depends(require_auth)], tags=["Métricas"], responses={200: {"model": list[Serie]}})
 def sessions_per_month():
     def _f():
         rows = _q("SELECT YEAR(opened_at) y, MONTH(opened_at) m, COUNT(*) sessions FROM chat_sessions "
@@ -1882,7 +2360,7 @@ def sessions_per_month():
     return _cached("stats:spm", 60, _f)
 
 
-@app.get("/api/stats/triage", dependencies=[Depends(require_auth)], tags=["Métricas"])
+@app.get("/api/stats/triage", dependencies=[Depends(require_auth)], tags=["Métricas"], responses={200: {"model": list[NivelTriaje]}})
 def stats_triage():
     def _f():
         rows = _q("SELECT cl.name, COUNT(*) value FROM chat_sessions cs JOIN classification cl ON cl.id=cs.classification_id GROUP BY cl.name")
@@ -1893,7 +2371,7 @@ def stats_triage():
     return _cached("stats:triage", 60, _f)
 
 
-@app.get("/api/stats/plans", dependencies=[Depends(require_auth)], tags=["Métricas"])
+@app.get("/api/stats/plans", dependencies=[Depends(require_auth)], tags=["Métricas"], responses={200: {"model": list[StatsPlan]}})
 def stats_plans():
     def _f():
         rows = _q("SELECT COALESCE((SELECT p.billing_cycle FROM payments p WHERE p.user_id=u.id AND p.status='confirmed' "
@@ -1906,7 +2384,7 @@ def stats_plans():
     return _cached("stats:plans", 60, _f)
 
 
-@app.get("/api/stats/attention-type", dependencies=[Depends(require_auth)], tags=["Métricas"])
+@app.get("/api/stats/attention-type", dependencies=[Depends(require_auth)], tags=["Métricas"], responses={200: {"model": list[TipoAtencion]}})
 def stats_attention_type():
     def _f():
         pres = _q("SELECT COUNT(*) c FROM chat_sessions WHERE hospital_id IS NOT NULL OR appointment_type='presencial'")[0]["c"]
@@ -1915,7 +2393,7 @@ def stats_attention_type():
     return _cached("stats:att", 60, _f)
 
 
-@app.get("/api/stats/csat", dependencies=[Depends(require_auth)], tags=["Métricas"])
+@app.get("/api/stats/csat", dependencies=[Depends(require_auth)], tags=["Métricas"], responses={200: {"model": list[PuntoCsat]}})
 def stats_csat():
     def _f():
         rows = _q("SELECT YEARWEEK(closed_at) yw, ROUND(AVG(feedback_score)/5*100) csat FROM chat_sessions "
@@ -1936,7 +2414,7 @@ class PortalRegisterInfo(BaseModel):
     token: str = Field(..., description="Token del enlace de registro, para saber a quién pertenece.")
 
 
-@app.post("/portal/register/info", tags=["Portal del acudiente"])
+@app.post("/portal/register/info", tags=["Portal del acudiente"], responses={200: {"model": RegistroInfo}})
 def portal_register_info(body: PortalRegisterInfo):
     """Publico: valida el enlace y devuelve datos para precargar el formulario.
 
@@ -1960,7 +2438,7 @@ def portal_register_info(body: PortalRegisterInfo):
             "email": r["email"], "hasPassword": bool(r["has_pw"])}
 
 
-@app.post("/portal/register", tags=["Portal del acudiente"])
+@app.post("/portal/register", tags=["Portal del acudiente"], responses={200: {"model": RegistroHecho}})
 def portal_register(body: PortalRegister):
     """Público: el acudiente fija su contraseña desde el form del dashboard (link firmado).
     Activa la cuenta y habilita el login del portal."""
@@ -1981,26 +2459,26 @@ def portal_register(body: PortalRegister):
 
 
 # ── Portal del acudiente (scoped: SOLO los datos del propio acudiente) ────────
-@app.get("/portal/me", tags=["Portal del acudiente"])
+@app.get("/portal/me", tags=["Portal del acudiente"], responses={200: {"model": AcudienteFicha}})
 def portal_me(gid: str = Depends(require_guardian)):
     """Perfil del acudiente autenticado + sus hijos (incluye seguro/plan)."""
     return _one_guardian(gid)
 
 
-@app.get("/portal/children", tags=["Portal del acudiente"])
+@app.get("/portal/children", tags=["Portal del acudiente"], responses={200: {"model": list[HijoFicha]}})
 def portal_children(gid: str = Depends(require_guardian)):
     """Hijos del acudiente autenticado."""
     return _children_for([gid]).get(gid, [])
 
 
-@app.get("/portal/patients", tags=["Portal del acudiente"])
+@app.get("/portal/patients", tags=["Portal del acudiente"], responses={200: {"model": list[PacienteFicha]}})
 def portal_patients(gid: str = Depends(require_guardian)):
     """Hijos (detalle de paciente) del acudiente autenticado."""
     rows = _q(f"{_P_SELECT} WHERE gd.guardian_id=%s ORDER BY d.full_name", (gid,))
     return [_patient_row(r) for r in rows]
 
 
-@app.get("/portal/chats", tags=["Portal del acudiente"])
+@app.get("/portal/chats", tags=["Portal del acudiente"], responses={200: {"model": list[PortalChatResumen]}})
 def portal_chats(gid: str = Depends(require_guardian)):
     """Historial de sesiones del acudiente autenticado (resumen, sin mensajes)."""
     rows = _q(
@@ -2025,7 +2503,7 @@ def portal_chats(gid: str = Depends(require_guardian)):
     } for s in rows]
 
 
-@app.get("/portal/payments", tags=["Portal del acudiente"])
+@app.get("/portal/payments", tags=["Portal del acudiente"], responses={200: {"model": list[PagoFicha]}})
 def portal_payments(gid: str = Depends(require_guardian)):
     """Pagos del acudiente autenticado."""
     rows = _q(f"{_PAY_SELECT} WHERE u.id=(SELECT user_id FROM guardians WHERE id=%s) "
@@ -2087,7 +2565,7 @@ class PortalMeUpdate(BaseModel):
                           "`insurance.policyNumber`, no en la raíz.")
 
 
-@app.patch("/portal/me", tags=["Portal del acudiente"])
+@app.patch("/portal/me", tags=["Portal del acudiente"], responses={200: {"model": AcudienteFicha}})
 def portal_update_me(body: PortalMeUpdate, gid: str = Depends(require_guardian)):
     """El acudiente edita sus propios datos."""
     guardian_update(gid, GuardianUpdate(**body.model_dump()))
@@ -2107,7 +2585,7 @@ class PortalChildCreate(BaseModel):
     school: str | None = Field(None, description="Centro educativo.")
 
 
-@app.post("/portal/children", status_code=201, tags=["Portal del acudiente"])
+@app.post("/portal/children", status_code=201, tags=["Portal del acudiente"], responses={200: {"model": PacienteFicha}})
 def portal_child_create(body: PortalChildCreate, gid: str = Depends(require_guardian)):
     """El acudiente agrega un hijo, dentro del cupo de su plan."""
     cupo = _cupo_hijos(gid)
@@ -2128,7 +2606,7 @@ def portal_child_create(body: PortalChildCreate, gid: str = Depends(require_guar
     return creado
 
 
-@app.patch("/portal/children/{pid}", tags=["Portal del acudiente"])
+@app.patch("/portal/children/{pid}", tags=["Portal del acudiente"], responses={200: {"model": PacienteFicha}})
 def portal_child_update(pid: IdPaciente, body: PatientUpdate,
                         gid: str = Depends(require_guardian)):
     """El acudiente edita a UN hijo suyo. Reusa la misma validacion del tablero."""
@@ -2136,7 +2614,7 @@ def portal_child_update(pid: IdPaciente, body: PatientUpdate,
     return _aplicar_patch_paciente(pid, body)
 
 
-@app.get("/portal/chats/{sid}", tags=["Portal del acudiente"])
+@app.get("/portal/chats/{sid}", tags=["Portal del acudiente"], responses={200: {"model": PortalChatDetalle}})
 def portal_chat_messages(sid: IdSesion, gid: str = Depends(require_guardian)):
     """Los mensajes de UNA conversacion suya. `/portal/chats` solo trae el resumen."""
     ses = _q("""SELECT cs.id, cs.summary, cs.opened_at, cs.closed_at, d.full_name AS patient
@@ -2187,7 +2665,7 @@ def _month_series(rows: list[dict]) -> list[dict]:
     return [{"month": str(r["month"]), "value": int(r["value"] or 0)} for r in rows]
 
 
-@app.get("/api/geo", dependencies=[Depends(require_auth)], tags=["Catálogos"])
+@app.get("/api/geo", dependencies=[Depends(require_auth)], tags=["Catálogos"], responses={200: {"model": list[PaisGeo]}})
 def geo():
     """Catálogo país → provincias/departamentos (Panamá, Colombia, Argentina)."""
     def _f():
@@ -2201,7 +2679,7 @@ def geo():
     return _cached("geo", 3600, _f)
 
 
-@app.get("/api/stats/summary", dependencies=[Depends(require_auth)], tags=["Métricas"])
+@app.get("/api/stats/summary", dependencies=[Depends(require_auth)], tags=["Métricas"], responses={200: {"model": StatsResumen}})
 def stats_summary():
     """North Star del Resumen: cuentas, conversión, revenue, CSAT, uso y seguridad."""
     def _f():
@@ -2258,7 +2736,7 @@ def stats_summary():
     return _cached("stats:summary", 60, _f)
 
 
-@app.get("/api/stats/accounts", dependencies=[Depends(require_auth)], tags=["Métricas"])
+@app.get("/api/stats/accounts", dependencies=[Depends(require_auth)], tags=["Métricas"], responses={200: {"model": StatsCuentas}})
 def stats_accounts():
     """Sección Cuentas: captación mensual y distribución por plan, aseguradora, país y género."""
     def _f():
@@ -2292,7 +2770,7 @@ def stats_accounts():
     return _cached("stats:accounts", 60, _f)
 
 
-@app.get("/api/stats/children", dependencies=[Depends(require_auth)], tags=["Métricas"])
+@app.get("/api/stats/children", dependencies=[Depends(require_auth)], tags=["Métricas"], responses={200: {"model": StatsHijos}})
 def stats_children():
     """Sección Niños: total, captación mensual, promedio por cuenta y pirámide de edad."""
     def _f():
@@ -2322,7 +2800,7 @@ def stats_children():
     return _cached("stats:children", 60, _f)
 
 
-@app.get("/api/stats/chats", dependencies=[Depends(require_auth)], tags=["Métricas"])
+@app.get("/api/stats/chats", dependencies=[Depends(require_auth)], tags=["Métricas"], responses={200: {"model": StatsChats}})
 def stats_chats():
     """Sección Chats: estados, derivaciones (casa/cita/urgencias) y las 3 curvas por mes."""
     def _f():
@@ -2371,7 +2849,7 @@ def stats_chats():
     return _cached("stats:chats", 60, _f)
 
 
-@app.get("/api/stats/performance", dependencies=[Depends(require_auth)], tags=["Métricas"])
+@app.get("/api/stats/performance", dependencies=[Depends(require_auth)], tags=["Métricas"], responses={200: {"model": StatsRendimiento}})
 def stats_performance():
     """Sección Desempeño. Ojo: `churnRate` es una APROXIMACIÓN por inactividad (ver `note`)."""
     def _f():
@@ -2418,7 +2896,7 @@ def stats_performance():
     return _cached("stats:performance", 60, _f)
 
 
-@app.get("/api/stats/insurance", dependencies=[Depends(require_auth)], tags=["Métricas"])
+@app.get("/api/stats/insurance", dependencies=[Depends(require_auth)], tags=["Métricas"], responses={200: {"model": StatsAseguradora}})
 def stats_insurance(
     insurance_id: Annotated[int | None, Query(description="Limita el corte a una aseguradora.")] = None,
     date_from: DesdeFecha = None,
@@ -2471,7 +2949,7 @@ def stats_insurance(
     return _cached(key, 60, _f)
 
 
-@app.get("/api/accounts", dependencies=[Depends(_solo_operadores)], tags=["Acudientes"])
+@app.get("/api/accounts", dependencies=[Depends(_solo_operadores)], tags=["Acudientes"], responses={200: {"model": Sobre[CuentaFicha]}})
 def accounts(page: Pagina = 1, page_limit: PorPagina = 20, q: Busqueda = None):
     """Sección Cuentas: una fila por familia, con código, plan, pagos, hijos y consultas."""
     page, page_limit, off = _pag(page, page_limit)
@@ -2515,7 +2993,7 @@ def accounts(page: Pagina = 1, page_limit: PorPagina = 20, q: Busqueda = None):
     return _envelope(items, page, page_limit, total)
 
 
-@app.get("/api/users", dependencies=[Depends(_solo_operadores)], tags=["Usuarios y roles"])
+@app.get("/api/users", dependencies=[Depends(_solo_operadores)], tags=["Usuarios y roles"], responses={200: {"model": Sobre[UsuarioInterno]}})
 def users_internal(
     page: Pagina = 1,
     page_limit: PorPagina = 20,
@@ -2626,7 +3104,7 @@ def _guard_last_super_admin(uid: str, role: str) -> None:
         )
 
 
-@app.get("/api/roles", dependencies=[Depends(_solo_operadores)], tags=["Usuarios y roles"])
+@app.get("/api/roles", dependencies=[Depends(_solo_operadores)], tags=["Usuarios y roles"], responses={200: {"model": ListaRoles}})
 def roles_catalog():
     """Catálogo de roles internos asignables, con su etiqueta y el rol de tablero al que mapea.
 
@@ -2711,7 +3189,7 @@ class UserMeUpdate(BaseModel):
     centerIds: list[str] | None = Field(None, description="reemplaza la lista completa; [] la vacia")
 
 
-@app.post("/api/users", dependencies=[Depends(_solo_operadores)], status_code=201, tags=["Usuarios y roles"])
+@app.post("/api/users", dependencies=[Depends(_solo_operadores)], status_code=201, tags=["Usuarios y roles"], responses={200: {"model": UsuarioInterno}})
 def user_create(body: UserCreate):
     """Crea un usuario interno (no acudiente) del tablero."""
     if body.role not in _INTERNAL_ROLES:
@@ -2830,14 +3308,14 @@ def _me_payload(uid: str) -> dict:
     return u
 
 
-@app.get("/api/users/me", dependencies=[Depends(require_auth)], tags=["Usuarios y roles"])
+@app.get("/api/users/me", dependencies=[Depends(require_auth)], tags=["Usuarios y roles"], responses={200: {"model": UsuarioInterno}})
 def user_me(claims: dict = Depends(require_auth)):
     """Perfil propio. Lo usa la pantalla «Mi perfil» para pintarse, y el resto del tablero
     para saber a quién NO dejar borrarse y si hay que forzar el cambio de clave."""
     return _me_payload(_me_uid(claims))
 
 
-@app.patch("/api/users/me", dependencies=[Depends(require_auth)], tags=["Usuarios y roles"])
+@app.patch("/api/users/me", dependencies=[Depends(require_auth)], tags=["Usuarios y roles"], responses={200: {"model": UsuarioInterno}})
 def user_update_me(body: UserMeUpdate, claims: dict = Depends(require_auth)):
     """Guarda los cambios de «Mi perfil». Funciona igual para cualquier rol — admin,
     ventas, médico, auditor: cada quien edita lo suyo.
@@ -2878,7 +3356,7 @@ def user_update_me(body: UserMeUpdate, claims: dict = Depends(require_auth)):
     return _me_payload(uid)
 
 
-@app.post("/api/users/me/password", dependencies=[Depends(require_auth)], tags=["Usuarios y roles"])
+@app.post("/api/users/me/password", dependencies=[Depends(require_auth)], tags=["Usuarios y roles"], responses={200: {"model": ClaveCambiada}})
 def user_change_own_password(body: UserOwnPassword, claims: dict = Depends(require_auth)):
     """Cambio de la PROPIA contraseña, verificando la actual.
 
@@ -2913,12 +3391,12 @@ def user_change_own_password(body: UserOwnPassword, claims: dict = Depends(requi
     }
 
 
-@app.get("/api/users/{uid}", dependencies=[Depends(_solo_operadores)], tags=["Usuarios y roles"])
+@app.get("/api/users/{uid}", dependencies=[Depends(_solo_operadores)], tags=["Usuarios y roles"], responses={200: {"model": UsuarioInterno}})
 def user_get(uid: IdUsuario):
     return _one_user(uid)
 
 
-@app.patch("/api/users/{uid}", dependencies=[Depends(_solo_operadores)], tags=["Usuarios y roles"])
+@app.patch("/api/users/{uid}", dependencies=[Depends(_solo_operadores)], tags=["Usuarios y roles"], responses={200: {"model": UsuarioInterno}})
 def user_update(uid: IdUsuario, body: UserUpdate, claims: dict = Depends(require_auth)):
     actual = _q("SELECT id, role FROM users WHERE id=%s AND deleted_at IS NULL", (uid,))
     if not actual:
@@ -2974,7 +3452,7 @@ def user_update(uid: IdUsuario, body: UserUpdate, claims: dict = Depends(require
     return _one_user(uid)
 
 
-@app.post("/api/users/{uid}/password", dependencies=[Depends(_solo_operadores)], tags=["Usuarios y roles"])
+@app.post("/api/users/{uid}/password", dependencies=[Depends(_solo_operadores)], tags=["Usuarios y roles"], responses={200: {"model": ClaveFijada}})
 def user_set_password(uid: IdUsuario, body: UserPassword):
     """Fija la contraseña del usuario (la elige el admin). Siempre la guarda con PBKDF2,
     así que de paso reemplaza los hashes SHA-256 heredados de METRICS_USERS.
@@ -2990,7 +3468,7 @@ def user_set_password(uid: IdUsuario, body: UserPassword):
     return {"ok": True, "id": uid, "mustChangePassword": False}
 
 
-@app.post("/api/users/{uid}/password/reset", dependencies=[Depends(_solo_operadores)], tags=["Usuarios y roles"])
+@app.post("/api/users/{uid}/password/reset", dependencies=[Depends(_solo_operadores)], tags=["Usuarios y roles"], responses={200: {"model": ClaveTemporal}})
 def user_reset_password(uid: IdUsuario):
     """RESTABLECE la clave: el API genera una temporal, la devuelve **una sola vez** y marca
     la cuenta para que el front obligue a cambiarla al entrar.
@@ -3017,7 +3495,7 @@ def user_reset_password(uid: IdUsuario):
     }
 
 
-@app.delete("/api/users/{uid}", dependencies=[Depends(_solo_operadores)], tags=["Usuarios y roles"])
+@app.delete("/api/users/{uid}", dependencies=[Depends(_solo_operadores)], tags=["Usuarios y roles"], responses={200: {"model": Borrado}})
 def user_delete(uid: IdUsuario, claims: dict = Depends(require_auth)):
     """Borrado suave: desactiva y le quita el acceso al tablero. Conserva la trazabilidad
     (p. ej. las sesiones que ese médico auditó siguen apuntando a él).
@@ -3349,8 +3827,18 @@ def _trim(s: str, n: int) -> str:
     return s if len(s) <= n else s[:n].rsplit(" ", 1)[0] + "…"
 
 
-@app.get("/api/patients/{pid}/clinical-history", dependencies=[Depends(require_auth)], tags=["Pacientes"])
-def clinical_history(pid: IdPaciente, download: Annotated[bool, Query(description="`true` devuelve el historial como archivo descargable en vez de JSON.")] = False):
+@app.get("/api/patients/{pid}/clinical-history", dependencies=[Depends(require_auth)],
+         tags=["Pacientes"],
+         response_class=Response,
+         responses={200: {"content": {"application/pdf": {}},
+                          "description": "La historia clínica en PDF."}})
+def clinical_history(
+    pid: IdPaciente,
+    download: Annotated[bool, Query(
+        description="Siempre devuelve un PDF; esto solo cambia la cabecera "
+                    "`Content-Disposition`. `false` (por defecto) lo abre en el navegador; "
+                    "`true` lo descarga como archivo.")] = False,
+):
     """Historia clínica del paciente en PDF: identificación, antecedentes y el compilado
     de todas sus consultas con conducta, banderas y notas del médico auditor."""
     data = _clinical_history_data(pid)
@@ -3369,7 +3857,7 @@ class DoctorNote(BaseModel):
     reviewed_by: str | None = Field(None, description="UUID del operador que la revisó.")
 
 
-@app.patch("/api/chats/{sid}/note", dependencies=[Depends(require_auth)], tags=["Conversaciones"])
+@app.patch("/api/chats/{sid}/note", dependencies=[Depends(require_auth)], tags=["Conversaciones"], responses={200: {"model": NotaChat}})
 def chat_note(sid: IdSesion, body: DoctorNote):
     """Comentario del médico auditor sobre una sesión (guarda quién y cuándo revisó)."""
     if not _q("SELECT id FROM chat_sessions WHERE id=%s", (sid,)):
@@ -3387,31 +3875,31 @@ def _empty_page(page: int, page_limit: int):
     return _envelope([], page, page_limit, 0)
 
 
-@app.get("/api/doctors", dependencies=[Depends(require_auth)], tags=["Agenda y profesionales"])
+@app.get("/api/doctors", dependencies=[Depends(require_auth)], tags=["Agenda y profesionales"], responses={200: {"model": PaginaVacia}})
 def doctors(page: Pagina = 1, page_limit: PorPagina = 20):
     return _empty_page(page, page_limit)
 
 
-@app.get("/api/specialists", dependencies=[Depends(require_auth)], tags=["Agenda y profesionales"])
+@app.get("/api/specialists", dependencies=[Depends(require_auth)], tags=["Agenda y profesionales"], responses={200: {"model": PaginaVacia}})
 def specialists(page: Pagina = 1, page_limit: PorPagina = 20):
     return _empty_page(page, page_limit)
 
 
-@app.get("/api/medications", dependencies=[Depends(require_auth)], tags=["Catálogos"])
+@app.get("/api/medications", dependencies=[Depends(require_auth)], tags=["Catálogos"], responses={200: {"model": PaginaVacia}})
 def medications(page: Pagina = 1, page_limit: PorPagina = 20):
     return _empty_page(page, page_limit)
 
 
-@app.get("/api/availability", dependencies=[Depends(require_auth)], tags=["Agenda y profesionales"])
+@app.get("/api/availability", dependencies=[Depends(require_auth)], tags=["Agenda y profesionales"], responses={200: {"model": PaginaVacia}})
 def availability(page: Pagina = 1, page_limit: PorPagina = 20):
     return _empty_page(page, page_limit)
 
 
-@app.get("/api/appointments", dependencies=[Depends(require_auth)], tags=["Agenda y profesionales"])
+@app.get("/api/appointments", dependencies=[Depends(require_auth)], tags=["Agenda y profesionales"], responses={200: {"model": PaginaVacia}})
 def appointments(page: Pagina = 1, page_limit: PorPagina = 20):
     return _empty_page(page, page_limit)
 
 
-@app.get("/api/logs", dependencies=[Depends(require_auth)], tags=["Operación"])
+@app.get("/api/logs", dependencies=[Depends(require_auth)], tags=["Operación"], responses={200: {"model": PaginaVacia}})
 def logs(page: Pagina = 1, page_limit: PorPagina = 20):
     return _empty_page(page, page_limit)
