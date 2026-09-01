@@ -386,6 +386,38 @@ def require_guardian(
     return claims["gid"]
 
 
+def _gid_si_es_acudiente(claims: dict) -> str | None:
+    """Si quien llama es un ACUDIENTE con acceso al tablero, devuelve su `guardians.id`.
+
+    `require_auth` no mira el rol: cualquiera con `dashboard_access = 1` alcanza los ~70
+    endpoints de operacion. Para un operador interno eso es lo correcto, pero un acudiente
+    con esa bandera (hoy Ana y David) veia las conversaciones y los pacientes de las demas
+    familias. Con esto, un token de acudiente queda acotado a lo suyo.
+
+    Devuelve None para operadores y para la X-API-Key, que siguen viendolo todo.
+    """
+    if claims.get("dbRole") != "guardian":
+        return None
+    uid = claims.get("uid")
+    if not uid:
+        return None
+    filas = _q("SELECT id FROM guardians WHERE user_id=%s", (uid,))
+    # Un acudiente sin ficha no puede ver nada: es mas seguro que devolver None, que
+    # aqui significaria "es un operador, ensenale todo".
+    return filas[0]["id"] if filas else "__sin_ficha__"
+
+
+def _solo_operadores(claims: dict = Depends(require_auth)) -> dict:
+    """Cierra el endpoint a los acudientes: es cosa del equipo interno.
+
+    Se usa en `dependencies=[...]` en lugar de `require_auth`; como depende de el, la
+    autenticacion se sigue haciendo igual (FastAPI reutiliza la dependencia).
+    """
+    if _gid_si_es_acudiente(claims) is not None:
+        raise HTTPException(status_code=403, detail="This endpoint is for staff only.")
+    return claims
+
+
 class LoginIn(BaseModel):
     """Credenciales del tablero (operadores)."""
     email: str = Field(..., description="Correo del operador. Debe tener `dashboard_access = 1`.",
@@ -831,11 +863,16 @@ _G_SELECT = """SELECT g.id, g.full_name AS name, g.relationship_type AS rel, g.c
     LEFT JOIN insurance_companies ic ON ic.id=g.insurance_company_id"""
 
 
-@app.get("/api/guardians", dependencies=[Depends(require_auth)], tags=["Acudientes"])
-def guardians(page: Pagina = 1, page_limit: PorPagina = 20, q: Busqueda = None):
+@app.get("/api/guardians", tags=["Acudientes"])
+def guardians(claims: dict = Depends(require_auth), page: Pagina = 1,
+              page_limit: PorPagina = 20, q: Busqueda = None):
     page, page_limit, off = _pag(page, page_limit)
     where = "WHERE u.deleted_at IS NULL"
     args: list = []
+    propio = _gid_si_es_acudiente(claims)
+    if propio is not None:
+        where += " AND g.id = %s"
+        args.append(propio)
     if q:
         where += " AND (g.full_name LIKE %s OR u.phone_number LIKE %s OR u.email LIKE %s)"
         args += [f"%{q}%"] * 3
@@ -962,7 +999,7 @@ class GuardianCreate(BaseModel):
                           "acudiente tendrá que fijarla desde su enlace de registro.")
 
 
-@app.post("/api/guardians", dependencies=[Depends(require_auth)], status_code=201, tags=["Acudientes"])
+@app.post("/api/guardians", dependencies=[Depends(_solo_operadores)], status_code=201, tags=["Acudientes"])
 def guardian_create(body: GuardianCreate):
     """Crea un acudiente desde el tablero, con su clave del portal.
 
@@ -1003,8 +1040,9 @@ def guardian_create(body: GuardianCreate):
     return creado
 
 
-@app.get("/api/guardians/{gid}", dependencies=[Depends(require_auth)], tags=["Acudientes"])
-def guardian_get(gid: IdAcudiente):
+@app.get("/api/guardians/{gid}", tags=["Acudientes"])
+def guardian_get(gid: IdAcudiente, claims: dict = Depends(require_auth)):
+    _exigir_ficha_propia(claims, gid)
     return _one_guardian(gid)
 
 
@@ -1027,8 +1065,20 @@ class GuardianUpdate(BaseModel):
     policyNumber: str | None = Field(None, description="Número de póliza.")
 
 
-@app.patch("/api/guardians/{gid}", dependencies=[Depends(require_auth)], tags=["Acudientes"])
-def guardian_update(gid: IdAcudiente, body: GuardianUpdate):
+@app.patch("/api/guardians/{gid}", tags=["Acudientes"])
+def guardian_update(gid: IdAcudiente, body: GuardianUpdate,
+                    claims: dict = Depends(require_auth)):
+    _exigir_ficha_propia(claims, gid)
+    # Un acudiente edita sus DATOS, no su contrato: sin esto podia mandarse
+    # `plan: "4_5_hijos"` sobre su propia ficha y subirse de plan sin pagar (comprobado
+    # que ocurria). Lo mismo con `status`, que decide si la cuenta esta activa.
+    if _gid_si_es_acudiente(claims) is not None:
+        prohibidos = [c for c in ("plan", "billingCycle", "status")
+                      if getattr(body, c) is not None]
+        if prohibidos:
+            raise HTTPException(
+                status_code=403,
+                detail=f"Not allowed to change: {', '.join(prohibidos)}.")
     g = _q("SELECT g.id, g.user_id FROM guardians g WHERE g.id=%s", (gid,))
     if not g:
         raise HTTPException(status_code=404, detail="Guardian not found.")
@@ -1078,7 +1128,7 @@ def guardian_update(gid: IdAcudiente, body: GuardianUpdate):
     return _one_guardian(gid)
 
 
-@app.delete("/api/guardians/{gid}", dependencies=[Depends(require_auth)], tags=["Acudientes"])
+@app.delete("/api/guardians/{gid}", dependencies=[Depends(_solo_operadores)], tags=["Acudientes"])
 def guardian_delete(gid: IdAcudiente):
     g = _q("SELECT user_id FROM guardians g WHERE g.id=%s", (gid,))
     if not g:
@@ -1093,7 +1143,7 @@ class PortalPassword(BaseModel):
                           description="Nueva contraseña del portal. Mínimo 6 caracteres.")
 
 
-@app.post("/api/guardians/{gid}/portal-password", dependencies=[Depends(require_auth)], tags=["Acudientes"])
+@app.post("/api/guardians/{gid}/portal-password", dependencies=[Depends(_solo_operadores)], tags=["Acudientes"])
 def guardian_set_portal_password(gid: IdAcudiente, body: PortalPassword):
     """Admin: fija/actualiza la contraseña del portal del acudiente (habilita su login)."""
     g = _q("SELECT user_id FROM guardians WHERE id=%s", (gid,))
@@ -1106,7 +1156,7 @@ def guardian_set_portal_password(gid: IdAcudiente, body: PortalPassword):
     return {"ok": True, "id": gid}
 
 
-@app.post("/api/guardians/{gid}/portal-password/reset", dependencies=[Depends(require_auth)], tags=["Acudientes"])
+@app.post("/api/guardians/{gid}/portal-password/reset", dependencies=[Depends(_solo_operadores)], tags=["Acudientes"])
 def guardian_reset_portal_password(gid: IdAcudiente):
     """RESTABLECE la clave del portal: el API genera una, la devuelve UNA vez y marca la
     cuenta para que el acudiente la cambie al entrar.
@@ -1167,7 +1217,7 @@ def portal_change_own_password(body: UserOwnPassword, gid: str = Depends(require
     }
 
 
-@app.post("/api/guardians/{gid}/portal-link", dependencies=[Depends(require_auth)], tags=["Acudientes"])
+@app.post("/api/guardians/{gid}/portal-link", dependencies=[Depends(_solo_operadores)], tags=["Acudientes"])
 def guardian_portal_link(gid: IdAcudiente):
     """Admin: emite un link firmado al formulario de registro del portal (para que el
     acudiente fije su propia contraseña). El bot puede emitir el mismo token con el secreto
@@ -1182,7 +1232,7 @@ def guardian_portal_link(gid: IdAcudiente):
     return {"token": token, "url": url, "expiresInHours": REGISTER_TTL // 3600}
 
 
-@app.get("/api/portal-links", dependencies=[Depends(require_auth)], tags=["Acudientes"])
+@app.get("/api/portal-links", dependencies=[Depends(_solo_operadores)], tags=["Acudientes"])
 def portal_links_bulk(
     page: Pagina = 1,
     page_limit: PorPagina = 50,
@@ -2421,7 +2471,7 @@ def stats_insurance(
     return _cached(key, 60, _f)
 
 
-@app.get("/api/accounts", dependencies=[Depends(require_auth)], tags=["Acudientes"])
+@app.get("/api/accounts", dependencies=[Depends(_solo_operadores)], tags=["Acudientes"])
 def accounts(page: Pagina = 1, page_limit: PorPagina = 20, q: Busqueda = None):
     """Sección Cuentas: una fila por familia, con código, plan, pagos, hijos y consultas."""
     page, page_limit, off = _pag(page, page_limit)
@@ -2465,7 +2515,7 @@ def accounts(page: Pagina = 1, page_limit: PorPagina = 20, q: Busqueda = None):
     return _envelope(items, page, page_limit, total)
 
 
-@app.get("/api/users", dependencies=[Depends(require_auth)], tags=["Usuarios y roles"])
+@app.get("/api/users", dependencies=[Depends(_solo_operadores)], tags=["Usuarios y roles"])
 def users_internal(
     page: Pagina = 1,
     page_limit: PorPagina = 20,
@@ -2576,7 +2626,7 @@ def _guard_last_super_admin(uid: str, role: str) -> None:
         )
 
 
-@app.get("/api/roles", dependencies=[Depends(require_auth)], tags=["Usuarios y roles"])
+@app.get("/api/roles", dependencies=[Depends(_solo_operadores)], tags=["Usuarios y roles"])
 def roles_catalog():
     """Catálogo de roles internos asignables, con su etiqueta y el rol de tablero al que mapea.
 
@@ -2661,7 +2711,7 @@ class UserMeUpdate(BaseModel):
     centerIds: list[str] | None = Field(None, description="reemplaza la lista completa; [] la vacia")
 
 
-@app.post("/api/users", dependencies=[Depends(require_auth)], status_code=201, tags=["Usuarios y roles"])
+@app.post("/api/users", dependencies=[Depends(_solo_operadores)], status_code=201, tags=["Usuarios y roles"])
 def user_create(body: UserCreate):
     """Crea un usuario interno (no acudiente) del tablero."""
     if body.role not in _INTERNAL_ROLES:
@@ -2709,25 +2759,11 @@ def user_create(body: UserCreate):
 
 # Las rutas /api/users/me van ANTES que /api/users/{uid}: FastAPI empareja en orden de
 # declaracion, y si {uid} va primero se traga "me" como si fuera un id y responde 404.
-def _gid_si_es_acudiente(claims: dict) -> str | None:
-    """Si quien llama es un ACUDIENTE con acceso al tablero, devuelve su `guardians.id`.
-
-    `require_auth` no mira el rol: cualquiera con `dashboard_access = 1` alcanza los ~70
-    endpoints de operacion. Para un operador interno eso es lo correcto, pero un acudiente
-    con esa bandera (hoy Ana y David) veia las conversaciones y los pacientes de las demas
-    familias. Con esto, un token de acudiente queda acotado a lo suyo.
-
-    Devuelve None para operadores y para la X-API-Key, que siguen viendolo todo.
-    """
-    if claims.get("dbRole") != "guardian":
-        return None
-    uid = claims.get("uid")
-    if not uid:
-        return None
-    filas = _q("SELECT id FROM guardians WHERE user_id=%s", (uid,))
-    # Un acudiente sin ficha no puede ver nada: es mas seguro que devolver None, que
-    # aqui significaria "es un operador, ensenale todo".
-    return filas[0]["id"] if filas else "__sin_ficha__"
+def _exigir_ficha_propia(claims: dict, gid: str) -> None:
+    """Si quien llama es acudiente, esa ficha tiene que ser la suya."""
+    propio = _gid_si_es_acudiente(claims)
+    if propio is not None and propio != gid:
+        raise HTTPException(status_code=404, detail="Guardian not found.")
 
 
 def _exigir_propio(claims: dict, pid: str) -> None:
@@ -2877,12 +2913,12 @@ def user_change_own_password(body: UserOwnPassword, claims: dict = Depends(requi
     }
 
 
-@app.get("/api/users/{uid}", dependencies=[Depends(require_auth)], tags=["Usuarios y roles"])
+@app.get("/api/users/{uid}", dependencies=[Depends(_solo_operadores)], tags=["Usuarios y roles"])
 def user_get(uid: IdUsuario):
     return _one_user(uid)
 
 
-@app.patch("/api/users/{uid}", dependencies=[Depends(require_auth)], tags=["Usuarios y roles"])
+@app.patch("/api/users/{uid}", dependencies=[Depends(_solo_operadores)], tags=["Usuarios y roles"])
 def user_update(uid: IdUsuario, body: UserUpdate, claims: dict = Depends(require_auth)):
     actual = _q("SELECT id, role FROM users WHERE id=%s AND deleted_at IS NULL", (uid,))
     if not actual:
@@ -2938,7 +2974,7 @@ def user_update(uid: IdUsuario, body: UserUpdate, claims: dict = Depends(require
     return _one_user(uid)
 
 
-@app.post("/api/users/{uid}/password", dependencies=[Depends(require_auth)], tags=["Usuarios y roles"])
+@app.post("/api/users/{uid}/password", dependencies=[Depends(_solo_operadores)], tags=["Usuarios y roles"])
 def user_set_password(uid: IdUsuario, body: UserPassword):
     """Fija la contraseña del usuario (la elige el admin). Siempre la guarda con PBKDF2,
     así que de paso reemplaza los hashes SHA-256 heredados de METRICS_USERS.
@@ -2954,7 +2990,7 @@ def user_set_password(uid: IdUsuario, body: UserPassword):
     return {"ok": True, "id": uid, "mustChangePassword": False}
 
 
-@app.post("/api/users/{uid}/password/reset", dependencies=[Depends(require_auth)], tags=["Usuarios y roles"])
+@app.post("/api/users/{uid}/password/reset", dependencies=[Depends(_solo_operadores)], tags=["Usuarios y roles"])
 def user_reset_password(uid: IdUsuario):
     """RESTABLECE la clave: el API genera una temporal, la devuelve **una sola vez** y marca
     la cuenta para que el front obligue a cambiarla al entrar.
@@ -2981,7 +3017,7 @@ def user_reset_password(uid: IdUsuario):
     }
 
 
-@app.delete("/api/users/{uid}", dependencies=[Depends(require_auth)], tags=["Usuarios y roles"])
+@app.delete("/api/users/{uid}", dependencies=[Depends(_solo_operadores)], tags=["Usuarios y roles"])
 def user_delete(uid: IdUsuario, claims: dict = Depends(require_auth)):
     """Borrado suave: desactiva y le quita el acceso al tablero. Conserva la trazabilidad
     (p. ej. las sesiones que ese médico auditó siguen apuntando a él).
