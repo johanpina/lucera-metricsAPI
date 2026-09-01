@@ -752,7 +752,7 @@ def _children_for(gids: list[str]) -> dict:
                d.policy_number AS policy, d.id_number, d.school, d.created_at, d.updated_at
             FROM dependents d JOIN guardian_dependent gd ON gd.dependent_id=d.id
             LEFT JOIN insurance_companies ic ON ic.id=d.insurance_company_id
-            WHERE gd.guardian_id IN ({ph})""",
+            WHERE d.deleted_at IS NULL AND gd.guardian_id IN ({ph})""",
         tuple(gids),
     )
     out: dict = {}
@@ -1246,11 +1246,16 @@ def _patient_row(r: dict) -> dict:
     }
 
 
-@app.get("/api/patients", dependencies=[Depends(require_auth)], tags=["Pacientes"])
-def patients(page: Pagina = 1, page_limit: PorPagina = 20, q: Busqueda = None):
+@app.get("/api/patients", tags=["Pacientes"])
+def patients(claims: dict = Depends(require_auth), page: Pagina = 1,
+             page_limit: PorPagina = 20, q: Busqueda = None):
     page, page_limit, off = _pag(page, page_limit)
-    where = "WHERE 1=1"
+    where = "WHERE d.deleted_at IS NULL"
     args: list = []
+    propio = _gid_si_es_acudiente(claims)
+    if propio is not None:
+        where += " AND gd.guardian_id = %s"
+        args.append(propio)
     if q:
         where += " AND (d.full_name LIKE %s OR g.full_name LIKE %s)"
         args += [f"%{q}%"] * 2
@@ -1261,8 +1266,16 @@ def patients(page: Pagina = 1, page_limit: PorPagina = 20, q: Busqueda = None):
 
 
 @app.get("/api/patients/{pid}", dependencies=[Depends(require_auth)], tags=["Pacientes"])
-def patient_get(pid: IdPaciente):
-    rows = _q(f"{_P_SELECT} WHERE d.id=%s", (pid,))
+def patient_get(pid: IdPaciente, claims: dict = Depends(require_auth)):
+    _exigir_propio(claims, pid)
+    return _ficha_paciente(pid)
+
+
+def _ficha_paciente(pid: str) -> dict:
+    """La ficha, sin comprobar permisos. La usan los endpoints DESPUES de comprobarlos y
+    tambien `patient_create`/`patient_update` para devolver el resultado; llamar al
+    endpoint desde dentro no sirve, porque su `claims` es una dependencia de FastAPI."""
+    rows = _q(f"{_P_SELECT} WHERE d.id=%s AND d.deleted_at IS NULL", (pid,))
     if not rows:
         raise HTTPException(status_code=404, detail="Patient not found.")
     return _patient_row(rows[0])
@@ -1319,12 +1332,19 @@ def patient_create(body: PatientCreate):
         ("INSERT INTO guardian_dependent (guardian_id, dependent_id, is_primary) VALUES (%s,%s,%s)",
          (body.guardianId, pid, 1)),
     ])
-    return patient_get(pid)
+    return _ficha_paciente(pid)
 
 
-@app.patch("/api/patients/{pid}", dependencies=[Depends(require_auth)], tags=["Pacientes"])
-def patient_update(pid: IdPaciente, body: PatientUpdate):
-    if not _q("SELECT id FROM dependents WHERE id=%s", (pid,)):
+@app.patch("/api/patients/{pid}", tags=["Pacientes"])
+def patient_update(pid: IdPaciente, body: PatientUpdate,
+                   claims: dict = Depends(require_auth)):
+    _exigir_propio(claims, pid)
+    return _aplicar_patch_paciente(pid, body)
+
+
+def _aplicar_patch_paciente(pid: str, body: PatientUpdate) -> dict:
+    """Aplica el PATCH sin comprobar permisos; eso lo hace quien llama."""
+    if not _q("SELECT id FROM dependents WHERE id=%s AND deleted_at IS NULL", (pid,)):
         raise HTTPException(status_code=404, detail="Patient not found.")
     sets, args = [], []
     if body.name is not None:
@@ -1353,24 +1373,29 @@ def patient_update(pid: IdPaciente, body: PatientUpdate):
         sets.append("school=%s"); args.append(body.school or None)
     if sets:
         _exec(f"UPDATE dependents SET {', '.join(sets)} WHERE id=%s", tuple(args + [pid]))
-    return patient_get(pid)
+    return _ficha_paciente(pid)
 
 
-@app.delete("/api/patients/{pid}", dependencies=[Depends(require_auth)], tags=["Pacientes"])
-def patient_delete(pid: IdPaciente):
-    if not _q("SELECT id FROM dependents WHERE id=%s", (pid,)):
+@app.delete("/api/patients/{pid}", tags=["Pacientes"])
+def patient_delete(pid: IdPaciente, claims: dict = Depends(require_auth)):
+    """Da de BAJA al paciente. No borra nada.
+
+    Antes soltaba las sesiones (`dependent_id = NULL`) y borraba la fila: se perdia la
+    historia clinica del nino y quedaban conversaciones que ya no se podian atribuir.
+    Ahora solo se marca; deja de verse en el tablero, en el portal y en el selector de
+    WhatsApp, y sigue enlazado a sus consultas.
+    """
+    if not _q("SELECT id FROM dependents WHERE id=%s AND deleted_at IS NULL", (pid,)):
         raise HTTPException(status_code=404, detail="Patient not found.")
-    _tx([
-        ("UPDATE chat_sessions SET dependent_id=NULL WHERE dependent_id=%s", (pid,)),
-        ("DELETE FROM guardian_dependent WHERE dependent_id=%s", (pid,)),
-        ("DELETE FROM dependents WHERE id=%s", (pid,)),
-    ])
+    _exigir_propio(claims, pid)
+    _exec("UPDATE dependents SET deleted_at=NOW(), updated_at=NOW() WHERE id=%s", (pid,))
     return {"deleted": True, "id": pid}
 
 
 # ── Chats (paginated) ────────────────────────────────────────────────────────
-@app.get("/api/chats", dependencies=[Depends(require_auth)], tags=["Conversaciones"])
+@app.get("/api/chats", tags=["Conversaciones"])
 def chats(
+    claims: dict = Depends(require_auth),
     page: Pagina = 1,
     page_limit: PorPagina = 20,
     derivation: Annotated[str | None, Query(
@@ -1403,6 +1428,11 @@ def chats(
     if date_to:
         where.append("cs.opened_at < DATE_ADD(%s, INTERVAL 1 DAY)")
         args.append(date_to)
+    # Si quien pregunta es un acudiente, el filtro no es opcional: manda sobre el
+    # `guardian_id` que venga por query, para que no pueda pedir los de otra familia.
+    propio = _gid_si_es_acudiente(claims)
+    if propio is not None:
+        guardian_id = propio
     if guardian_id:
         where.append("cs.guardian_id = %s")
         args.append(guardian_id)
@@ -1773,7 +1803,7 @@ def usage_by_user():
 def kpis():
     def _f():
         active = _q("SELECT COUNT(*) c FROM users WHERE status='active'")[0]["c"]
-        children = _q("SELECT COUNT(*) c FROM dependents")[0]["c"]
+        children = _q("SELECT COUNT(*) c FROM dependents WHERE deleted_at IS NULL")[0]["c"]
         sm = _q("SELECT COUNT(*) c FROM chat_sessions WHERE opened_at >= DATE_FORMAT(NOW(),'%Y-%m-01')")[0]["c"]
         paid = _q("SELECT COUNT(DISTINCT user_id) c FROM payments WHERE status='confirmed'")[0]["c"]
         total = _q("SELECT COUNT(*) c FROM users")[0]["c"] or 1
@@ -2032,7 +2062,9 @@ def portal_child_create(body: PortalChildCreate, gid: str = Depends(require_guar
     """El acudiente agrega un hijo, dentro del cupo de su plan."""
     cupo = _cupo_hijos(gid)
     if cupo is not None:
-        actuales = _q("SELECT COUNT(*) n FROM guardian_dependent WHERE guardian_id=%s", (gid,))
+        actuales = _q("SELECT COUNT(*) n FROM guardian_dependent gd "
+                      "JOIN dependents d ON d.id=gd.dependent_id "
+                      "WHERE gd.guardian_id=%s AND d.deleted_at IS NULL", (gid,))
         if actuales[0]["n"] >= cupo:
             raise HTTPException(
                 status_code=409,
@@ -2041,8 +2073,8 @@ def portal_child_create(body: PortalChildCreate, gid: str = Depends(require_guar
         exclude={"idNumber", "school"})))
     # patient_create no acepta cedula ni colegio: se aplican aparte.
     if body.idNumber or body.school:
-        patient_update(creado["id"], PatientUpdate(idNumber=body.idNumber, school=body.school))
-        creado = patient_get(creado["id"])
+        _aplicar_patch_paciente(creado["id"], PatientUpdate(idNumber=body.idNumber, school=body.school))
+        creado = _ficha_paciente(creado["id"])
     return creado
 
 
@@ -2051,7 +2083,7 @@ def portal_child_update(pid: IdPaciente, body: PatientUpdate,
                         gid: str = Depends(require_guardian)):
     """El acudiente edita a UN hijo suyo. Reusa la misma validacion del tablero."""
     _hijo_propio(gid, pid)
-    return patient_update(pid, body)
+    return _aplicar_patch_paciente(pid, body)
 
 
 @app.get("/portal/chats/{sid}", tags=["Portal del acudiente"])
@@ -2214,7 +2246,7 @@ def stats_accounts():
 def stats_children():
     """Sección Niños: total, captación mensual, promedio por cuenta y pirámide de edad."""
     def _f():
-        total = int(_q("SELECT COUNT(*) c FROM dependents")[0]["c"] or 0)
+        total = int(_q("SELECT COUNT(*) c FROM dependents WHERE deleted_at IS NULL")[0]["c"] or 0)
         accounts = int(_q("SELECT COUNT(*) c FROM guardians")[0]["c"] or 0)
         by_month = _q(
             "SELECT DATE_FORMAT(created_at,'%Y-%m') month, COUNT(*) value FROM dependents "
@@ -2404,7 +2436,9 @@ def accounts(page: Pagina = 1, page_limit: PorPagina = 20, q: Busqueda = None):
         f"""SELECT g.id, g.account_code, g.full_name, g.gender, g.country, g.province, g.city,
                    g.address, u.phone_number, u.email, u.status, u.created_at, ic.name AS insurance,
                    u.subscription_expires_at AS expires_at, g.id_number,
-                   (SELECT COUNT(*) FROM guardian_dependent gd WHERE gd.guardian_id=g.id) children,
+                   (SELECT COUNT(*) FROM guardian_dependent gd JOIN dependents d2
+                       ON d2.id=gd.dependent_id
+                     WHERE gd.guardian_id=g.id AND d2.deleted_at IS NULL) children,
                    (SELECT COUNT(*) FROM chat_sessions cs WHERE cs.guardian_id=g.id) chats,
                    (SELECT p.status FROM payments p WHERE p.user_id=u.id
                       ORDER BY p.created_at DESC LIMIT 1) pay_status,
@@ -2675,6 +2709,38 @@ def user_create(body: UserCreate):
 
 # Las rutas /api/users/me van ANTES que /api/users/{uid}: FastAPI empareja en orden de
 # declaracion, y si {uid} va primero se traga "me" como si fuera un id y responde 404.
+def _gid_si_es_acudiente(claims: dict) -> str | None:
+    """Si quien llama es un ACUDIENTE con acceso al tablero, devuelve su `guardians.id`.
+
+    `require_auth` no mira el rol: cualquiera con `dashboard_access = 1` alcanza los ~70
+    endpoints de operacion. Para un operador interno eso es lo correcto, pero un acudiente
+    con esa bandera (hoy Ana y David) veia las conversaciones y los pacientes de las demas
+    familias. Con esto, un token de acudiente queda acotado a lo suyo.
+
+    Devuelve None para operadores y para la X-API-Key, que siguen viendolo todo.
+    """
+    if claims.get("dbRole") != "guardian":
+        return None
+    uid = claims.get("uid")
+    if not uid:
+        return None
+    filas = _q("SELECT id FROM guardians WHERE user_id=%s", (uid,))
+    # Un acudiente sin ficha no puede ver nada: es mas seguro que devolver None, que
+    # aqui significaria "es un operador, ensenale todo".
+    return filas[0]["id"] if filas else "__sin_ficha__"
+
+
+def _exigir_propio(claims: dict, pid: str) -> None:
+    """Si quien llama es acudiente, ese paciente tiene que ser hijo suyo."""
+    propio = _gid_si_es_acudiente(claims)
+    if propio is None:
+        return
+    if not _q("SELECT 1 FROM guardian_dependent WHERE guardian_id=%s AND dependent_id=%s",
+              (propio, pid)):
+        # 404 y no 403: no se confirma que ese id exista en otra familia.
+        raise HTTPException(status_code=404, detail="Patient not found.")
+
+
 def _me_uid(claims: dict) -> str:
     """Id del usuario del token. La X-API-Key no representa a una persona, así que las
     rutas /me no pueden usarla."""
