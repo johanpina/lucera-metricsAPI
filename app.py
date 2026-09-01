@@ -2614,6 +2614,42 @@ def portal_child_update(pid: IdPaciente, body: PatientUpdate,
     return _aplicar_patch_paciente(pid, body)
 
 
+@app.delete("/portal/children/{pid}", tags=["Portal del acudiente"],
+            responses={200: {"model": Borrado}})
+def portal_child_delete(pid: IdPaciente, gid: str = Depends(require_guardian)):
+    """El acudiente da de BAJA a un hijo suyo. No borra nada.
+
+    Misma baja logica que `DELETE /api/patients/{pid}`: se marca `deleted_at`, el hijo
+    desaparece de sus listados y del selector de WhatsApp, libera cupo del plan, y sus
+    conversaciones siguen enlazadas a el.
+    """
+    _hijo_propio(gid, pid)
+    if not _q("SELECT id FROM dependents WHERE id=%s AND deleted_at IS NULL", (pid,)):
+        raise HTTPException(status_code=404, detail="Patient not found.")
+    _exec("UPDATE dependents SET deleted_at=NOW(), updated_at=NOW() WHERE id=%s", (pid,))
+    return {"deleted": True, "id": pid}
+
+
+# ── Catalogos que necesita el portal ─────────────────────────────────────────
+# `PATCH /portal/me` y `PATCH /portal/children/{pid}` aceptan `insuranceId`, pero la
+# lista de aseguradoras solo estaba en `/api/insurances`, que un token de portal no
+# alcanza: el formulario de edicion no se podia ni pintar. Mismo caso con paises y
+# provincias. Son catalogos publicos, sin dato de nadie.
+@app.get("/portal/insurances", tags=["Portal del acudiente"],
+         responses={200: {"model": list[Aseguradora]}})
+def portal_insurances(gid: str = Depends(require_guardian)):
+    """Aseguradoras activas, para el selector del formulario del portal."""
+    return [{"id": r["id"], "name": r["name"]} for r in
+            _q("SELECT id, name FROM insurance_companies WHERE active=1 ORDER BY name")]
+
+
+@app.get("/portal/geo", tags=["Portal del acudiente"],
+         responses={200: {"model": list[PaisGeo]}})
+def portal_geo(gid: str = Depends(require_guardian)):
+    """Paises y sus provincias, para los selectores del formulario del portal."""
+    return geo()
+
+
 @app.get("/portal/chats/{sid}", tags=["Portal del acudiente"], responses={200: {"model": PortalChatDetalle}})
 def portal_chat_messages(sid: IdSesion, gid: str = Depends(require_guardian)):
     """Los mensajes de UNA conversacion suya. `/portal/chats` solo trae el resumen."""
