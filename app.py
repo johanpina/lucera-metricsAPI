@@ -948,8 +948,16 @@ GRUPOS = [
                     "mundos separados: el token del portal NO sirve en `/api/*` y viceversa. "
                     "Pulsa **Authorize** arriba y pega el `access_token` para probar el resto."},
     {"name": "Portal del acudiente",
-     "description": "Lo que ve y edita un papá sobre **sus propios** datos. Cada llamada se acota "
-                    "al acudiente del token: pedir algo de otra familia responde `404`."},
+     "description": "**Obsoleto.** El portal y el tablero son la misma aplicación, así que "
+                    "estas rutas duplican las de `/api/*`, que ya vienen acotadas por rol: "
+                    "un acudiente solo alcanza lo suyo. Siguen funcionando, pero cada una "
+                    "indica su equivalente.\n\n"
+                    "**Un token, un mundo.** El de `/auth/login` NO sirve aquí y el de "
+                    "`/auth/guardian/login` NO sirve en `/api/*`. Para una sola aplicación, "
+                    "usa `/auth/login` (acepta teléfono o correo) y `/api/*`.\n\n"
+                    "Las dos que NO son obsoletas son `/portal/register` y "
+                    "`/portal/register/info`: el registro desde el enlace de WhatsApp, que "
+                    "no lleva sesión."},
     {"name": "Acudientes",
      "description": "Alta, consulta y edición de acudientes desde el tablero, más sus enlaces de "
                     "registro y el restablecimiento de la clave del portal."},
@@ -1683,7 +1691,9 @@ class UserOwnPassword(BaseModel):
                              description="La nueva. Mínimo 6 caracteres y distinta de la actual.")
 
 
-@app.post("/portal/password", tags=["Portal del acudiente"], responses={200: {"model": ClaveCambiada}})
+@app.post("/portal/password", tags=["Portal del acudiente"], responses={200: {"model": ClaveCambiada}},
+            deprecated=True,
+            summary="Obsoleto — usar POST /api/users/me/password")
 def portal_change_own_password(body: UserOwnPassword, gid: str = Depends(require_guardian)):
     """El ACUDIENTE cambia su propia clave, verificando la actual.
 
@@ -1857,8 +1867,23 @@ class PatientUpdate(BaseModel):
     school: str | None = Field(None, description="Centro educativo.")
 
 
-@app.post("/api/patients", dependencies=[Depends(require_auth)], status_code=201, tags=["Pacientes"], responses={200: {"model": PacienteFicha}})
-def patient_create(body: PatientCreate):
+@app.post("/api/patients", status_code=201, tags=["Pacientes"], responses={200: {"model": PacienteFicha}})
+def patient_create(body: PatientCreate, claims: dict = Depends(require_auth)):
+    # Un acudiente solo puede colgar hijos de SI MISMO: sin esto podia mandar el
+    # `guardianId` de otra familia y meterle un hijo. Y el cupo del plan tambien aplica
+    # aqui, o se saltaria el tope usando este endpoint en vez del del portal.
+    propio = _gid_si_es_acudiente(claims)
+    if propio is not None:
+        body.guardianId = propio
+        cupo = _cupo_hijos(propio)
+        if cupo is not None:
+            n = _q("SELECT COUNT(*) n FROM guardian_dependent gd JOIN dependents d "
+                   "ON d.id=gd.dependent_id WHERE gd.guardian_id=%s AND d.deleted_at IS NULL",
+                   (propio,))[0]["n"]
+            if n >= cupo:
+                raise HTTPException(
+                    status_code=409,
+                    detail=f"Your plan covers {cupo} child(ren). Upgrade to add another.")
     if not _q("SELECT id FROM guardians WHERE id=%s", (body.guardianId,)):
         raise HTTPException(status_code=404, detail="guardianId not found.")
     try:
@@ -2490,26 +2515,34 @@ def portal_register(body: PortalRegister):
 
 
 # ── Portal del acudiente (scoped: SOLO los datos del propio acudiente) ────────
-@app.get("/portal/me", tags=["Portal del acudiente"], responses={200: {"model": AcudienteFicha}})
+@app.get("/portal/me", tags=["Portal del acudiente"], responses={200: {"model": AcudienteFicha}},
+            deprecated=True,
+            summary="Obsoleto — usar GET /api/guardians (devuelve solo su ficha)")
 def portal_me(gid: str = Depends(require_guardian)):
     """Perfil del acudiente autenticado + sus hijos (incluye seguro/plan)."""
     return _one_guardian(gid)
 
 
-@app.get("/portal/children", tags=["Portal del acudiente"], responses={200: {"model": list[HijoFicha]}})
+@app.get("/portal/children", tags=["Portal del acudiente"], responses={200: {"model": list[HijoFicha]}},
+            deprecated=True,
+            summary="Obsoleto — usar GET /api/patients")
 def portal_children(gid: str = Depends(require_guardian)):
     """Hijos del acudiente autenticado."""
     return _children_for([gid]).get(gid, [])
 
 
-@app.get("/portal/patients", tags=["Portal del acudiente"], responses={200: {"model": list[PacienteFicha]}})
+@app.get("/portal/patients", tags=["Portal del acudiente"], responses={200: {"model": list[PacienteFicha]}},
+            deprecated=True,
+            summary="Obsoleto — usar GET /api/patients")
 def portal_patients(gid: str = Depends(require_guardian)):
     """Hijos (detalle de paciente) del acudiente autenticado."""
     rows = _q(f"{_P_SELECT} WHERE gd.guardian_id=%s ORDER BY d.full_name", (gid,))
     return [_patient_row(r) for r in rows]
 
 
-@app.get("/portal/chats", tags=["Portal del acudiente"], responses={200: {"model": list[PortalChatResumen]}})
+@app.get("/portal/chats", tags=["Portal del acudiente"], responses={200: {"model": list[PortalChatResumen]}},
+            deprecated=True,
+            summary="Obsoleto — usar GET /api/chats (ya incluye los mensajes)")
 def portal_chats(gid: str = Depends(require_guardian)):
     """Historial de sesiones del acudiente autenticado (resumen, sin mensajes)."""
     rows = _q(
@@ -2534,7 +2567,9 @@ def portal_chats(gid: str = Depends(require_guardian)):
     } for s in rows]
 
 
-@app.get("/portal/payments", tags=["Portal del acudiente"], responses={200: {"model": list[PagoFicha]}})
+@app.get("/portal/payments", tags=["Portal del acudiente"], responses={200: {"model": list[PagoFicha]}},
+            deprecated=True,
+            summary="Obsoleto — usar GET /api/payments")
 def portal_payments(gid: str = Depends(require_guardian)):
     """Pagos del acudiente autenticado."""
     rows = _q(f"{_PAY_SELECT} WHERE u.id=(SELECT user_id FROM guardians WHERE id=%s) "
@@ -2596,7 +2631,9 @@ class PortalMeUpdate(BaseModel):
                           "`insurance.policyNumber`, no en la raíz.")
 
 
-@app.patch("/portal/me", tags=["Portal del acudiente"], responses={200: {"model": AcudienteFicha}})
+@app.patch("/portal/me", tags=["Portal del acudiente"], responses={200: {"model": AcudienteFicha}},
+            deprecated=True,
+            summary="Obsoleto — usar PATCH /api/guardians/{gid}")
 def portal_update_me(body: PortalMeUpdate, gid: str = Depends(require_guardian)):
     """El acudiente edita sus propios datos."""
     guardian_update(gid, GuardianUpdate(**body.model_dump()))
@@ -2616,7 +2653,9 @@ class PortalChildCreate(BaseModel):
     school: str | None = Field(None, description="Centro educativo.")
 
 
-@app.post("/portal/children", status_code=201, tags=["Portal del acudiente"], responses={200: {"model": PacienteFicha}})
+@app.post("/portal/children", status_code=201, tags=["Portal del acudiente"], responses={200: {"model": PacienteFicha}},
+            deprecated=True,
+            summary="Obsoleto — usar POST /api/patients")
 def portal_child_create(body: PortalChildCreate, gid: str = Depends(require_guardian)):
     """El acudiente agrega un hijo, dentro del cupo de su plan."""
     cupo = _cupo_hijos(gid)
@@ -2629,7 +2668,7 @@ def portal_child_create(body: PortalChildCreate, gid: str = Depends(require_guar
                 status_code=409,
                 detail=f"Your plan covers {cupo} child(ren). Upgrade to add another.")
     creado = patient_create(PatientCreate(guardianId=gid, **body.model_dump(
-        exclude={"idNumber", "school"})))
+        exclude={"idNumber", "school"})), claims={"sub": "portal", "role": "Admin"})
     # patient_create no acepta cedula ni colegio: se aplican aparte.
     if body.idNumber or body.school:
         _aplicar_patch_paciente(creado["id"], PatientUpdate(idNumber=body.idNumber, school=body.school))
@@ -2637,7 +2676,9 @@ def portal_child_create(body: PortalChildCreate, gid: str = Depends(require_guar
     return creado
 
 
-@app.patch("/portal/children/{pid}", tags=["Portal del acudiente"], responses={200: {"model": PacienteFicha}})
+@app.patch("/portal/children/{pid}", tags=["Portal del acudiente"], responses={200: {"model": PacienteFicha}},
+            deprecated=True,
+            summary="Obsoleto — usar PATCH /api/patients/{pid}")
 def portal_child_update(pid: IdPaciente, body: PatientUpdate,
                         gid: str = Depends(require_guardian)):
     """El acudiente edita a UN hijo suyo. Reusa la misma validacion del tablero."""
@@ -2646,7 +2687,9 @@ def portal_child_update(pid: IdPaciente, body: PatientUpdate,
 
 
 @app.delete("/portal/children/{pid}", tags=["Portal del acudiente"],
-            responses={200: {"model": Borrado}})
+            responses={200: {"model": Borrado}},
+            deprecated=True,
+            summary="Obsoleto — usar DELETE /api/patients/{pid}")
 def portal_child_delete(pid: IdPaciente, gid: str = Depends(require_guardian)):
     """El acudiente da de BAJA a un hijo suyo. No borra nada.
 
@@ -2667,7 +2710,9 @@ def portal_child_delete(pid: IdPaciente, gid: str = Depends(require_guardian)):
 # alcanza: el formulario de edicion no se podia ni pintar. Mismo caso con paises y
 # provincias. Son catalogos publicos, sin dato de nadie.
 @app.get("/portal/insurances", tags=["Portal del acudiente"],
-         responses={200: {"model": list[Aseguradora]}})
+         responses={200: {"model": list[Aseguradora]}},
+            deprecated=True,
+            summary="Obsoleto — usar GET /api/insurances")
 def portal_insurances(gid: str = Depends(require_guardian)):
     """Aseguradoras activas, para el selector del formulario del portal."""
     return [{"id": r["id"], "name": r["name"]} for r in
@@ -2675,13 +2720,17 @@ def portal_insurances(gid: str = Depends(require_guardian)):
 
 
 @app.get("/portal/geo", tags=["Portal del acudiente"],
-         responses={200: {"model": list[PaisGeo]}})
+         responses={200: {"model": list[PaisGeo]}},
+            deprecated=True,
+            summary="Obsoleto — usar GET /api/geo")
 def portal_geo(gid: str = Depends(require_guardian)):
     """Paises y sus provincias, para los selectores del formulario del portal."""
     return geo()
 
 
-@app.get("/portal/chats/{sid}", tags=["Portal del acudiente"], responses={200: {"model": PortalChatDetalle}})
+@app.get("/portal/chats/{sid}", tags=["Portal del acudiente"], responses={200: {"model": PortalChatDetalle}},
+            deprecated=True,
+            summary="Obsoleto — usar GET /api/chats (cada chat ya trae `messages`)")
 def portal_chat_messages(sid: IdSesion, gid: str = Depends(require_guardian)):
     """Los mensajes de UNA conversacion suya. `/portal/chats` solo trae el resumen."""
     ses = _q("""SELECT cs.id, cs.summary, cs.opened_at, cs.closed_at, d.full_name AS patient
