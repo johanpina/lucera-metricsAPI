@@ -215,13 +215,23 @@ ROLE_TO_DASHBOARD = {
 }
 
 
-def _dashboard_user(email: str) -> dict | None:
-    """Busca un operador del tablero por correo. Devuelve None si no puede entrar."""
+def _dashboard_user(identificador: str) -> dict | None:
+    """Busca a quien entra al tablero por CORREO O TELEFONO. None si no puede entrar.
+
+    Antes solo por correo. Al abrir el tablero a los acudientes eso dejaba fuera a los que
+    se registraron desde WhatsApp sin dar correo: el sistema les pone uno sintetico
+    (`<wa_id>@wa.lucera.local`) que ellos no conocen. El login del portal ya aceptaba los
+    dos; este se comporta igual.
+    """
+    if "@" in identificador:
+        campo, valor = "LOWER(email)", identificador.lower()
+    else:
+        campo, valor = "phone_number", _digits(identificador)
     rows = _q(
-        """SELECT id, email, full_name, role, status, password_hash, must_change_password
+        f"""SELECT id, email, full_name, role, status, password_hash, must_change_password
            FROM users
-           WHERE email=%s AND deleted_at IS NULL AND status='active' AND dashboard_access=1""",
-        (email,),
+           WHERE {campo}=%s AND deleted_at IS NULL AND status='active' AND dashboard_access=1""",
+        (valor,),
     )
     return rows[0] if rows else None
 
@@ -898,8 +908,11 @@ class PaginaVacia(BaseModel):
 
 class LoginIn(BaseModel):
     """Credenciales del tablero (operadores)."""
-    email: str = Field(..., description="Correo del operador. Debe tener `dashboard_access = 1`.",
-                       examples=["admin@lucera.pa"])
+    email: str = Field(
+        ..., description="Correo **o teléfono** (solo dígitos, con código de país). La "
+                         "cuenta necesita `dashboard_access = 1`. El campo se sigue "
+                         "llamando `email` para no romper al front que ya existe.",
+        examples=["admin@lucera.pa"])
     password: str = Field(..., description="Contraseña en claro; viaja solo por HTTPS.")
 
 
@@ -1017,7 +1030,7 @@ app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_methods=["*"], all
 @app.post("/auth/login", tags=["Autenticación"], responses={200: {"model": SesionTablero}})
 def login(body: LoginIn) -> dict:
     """Login del tablero. Autentica contra la tabla `users` (no contra variables de entorno)."""
-    sub = (body.email or "").lower().strip()
+    sub = (body.email or "").strip()
     u = _dashboard_user(sub)
     if u is None or not _verify_password(body.password or "", u["password_hash"]):
         # Mismo mensaje si el correo no existe, si está inactivo o si no tiene acceso al
@@ -1035,7 +1048,8 @@ def login(body: LoginIn) -> dict:
                                      dbRole=u["role"], mcp=mcp),
         "token_type": "Bearer",
         "expires_in": ACCESS_TTL,
-        "user": {"id": u["id"], "email": sub, "name": name, "role": role, "dbRole": u["role"],
+        "user": {"id": u["id"], "email": u["email"], "name": name, "role": role,
+                 "dbRole": u["role"],
                  # Si viene true, el front debe mandar al usuario a cambiar la clave
                  # (entro con una temporal) via POST /api/users/me/password.
                  "mustChangePassword": mcp},
@@ -1115,7 +1129,7 @@ def health():
         raise HTTPException(status_code=503, detail=f"db: {e}")
 
 
-@app.get("/api/bot-status", dependencies=[Depends(require_auth)], tags=["Operación"], responses={200: {"model": EstadoBot}})
+@app.get("/api/bot-status", dependencies=[Depends(_solo_operadores)], tags=["Operación"], responses={200: {"model": EstadoBot}})
 def bot_status():
     """Estado del bot de WhatsApp para el tablero: hace ping al /ready del bot.
 
@@ -1498,9 +1512,12 @@ def guardian_create(body: GuardianCreate):
         hash_inicial = _hash_password(clave)
 
     _guard_integrity(lambda: _tx([
+        # `dashboard_access` va en 1: el acudiente entra al tablero a ver y editar a sus
+        # hijos y sus consultas. Los endpoints estan acotados por rol, asi que solo
+        # alcanza lo suyo. Sin la bandera, `/auth/login` le responde 401.
         ("""INSERT INTO users (id, email, phone_number, password_hash, role, status, is_active,
-             must_change_password, created_at, updated_at)
-             VALUES (%s,%s,%s,%s,'guardian',%s,%s,%s,NOW(),NOW())""",
+             must_change_password, dashboard_access, created_at, updated_at)
+             VALUES (%s,%s,%s,%s,'guardian',%s,%s,%s,1,NOW(),NOW())""",
          (uid, body.email.strip().lower(), phone, hash_inicial, status,
           0 if status != "active" else 1, 1 if clave else 0)),
         ("""INSERT INTO guardians (id, user_id, full_name, relationship_type, address, country, city, province,
@@ -2055,17 +2072,31 @@ def _payment_row(r: dict) -> dict:
     }
 
 
-@app.get("/api/payments", dependencies=[Depends(require_auth)], tags=["Pagos y planes"], responses={200: {"model": Sobre[PagoFicha]}})
-def payments(page: Pagina = 1, page_limit: PorPagina = 20):
+@app.get("/api/payments", tags=["Pagos y planes"], responses={200: {"model": Sobre[PagoFicha]}})
+def payments(claims: dict = Depends(require_auth), page: Pagina = 1, page_limit: PorPagina = 20):
     page, page_limit, off = _pag(page, page_limit)
+    propio = _gid_si_es_acudiente(claims)
+    if propio is not None:
+        # Un acudiente ve SU facturacion, no la de las demas familias.
+        donde = "WHERE p.user_id = (SELECT user_id FROM guardians WHERE id=%s)"
+        total = _q(f"SELECT COUNT(*) c FROM payments p {donde}", (propio,))[0]["c"]
+        rows = _q(f"{_PAY_SELECT} {donde} ORDER BY p.created_at DESC LIMIT %s OFFSET %s",
+                  (propio, page_limit, off))
+        return _envelope([_payment_row(r) for r in rows], page, page_limit, total)
     total = _q("SELECT COUNT(*) c FROM payments")[0]["c"]
     rows = _q(f"{_PAY_SELECT} ORDER BY p.created_at DESC LIMIT %s OFFSET %s", (page_limit, off))
     return _envelope([_payment_row(r) for r in rows], page, page_limit, total)
 
 
 @app.get("/api/payments/{pid}", dependencies=[Depends(require_auth)], tags=["Pagos y planes"], responses={200: {"model": PagoFicha}})
-def payment_get(pid: IdPaciente):
-    rows = _q(f"{_PAY_SELECT} WHERE p.id=%s OR p.provider_txn_id=%s", (pid, pid))
+def payment_get(pid: IdPaciente, claims: dict = Depends(require_auth)):
+    propio = _gid_si_es_acudiente(claims)
+    cond = "(p.id=%s OR p.provider_txn_id=%s)"
+    args = [pid, pid]
+    if propio is not None:
+        cond += " AND p.user_id = (SELECT user_id FROM guardians WHERE id=%s)"
+        args.append(propio)
+    rows = _q(f"{_PAY_SELECT} WHERE {cond}", tuple(args))
     if not rows:
         raise HTTPException(status_code=404, detail="Payment not found.")
     return _payment_row(rows[0])
@@ -2081,7 +2112,7 @@ class PaymentCreate(BaseModel):
     txnId: str | None = Field(None, description="Referencia de la pasarela.")
 
 
-@app.post("/api/payments", dependencies=[Depends(require_auth)], status_code=201, tags=["Pagos y planes"], responses={200: {"model": PagoFicha}})
+@app.post("/api/payments", dependencies=[Depends(_solo_operadores)], status_code=201, tags=["Pagos y planes"], responses={200: {"model": PagoFicha}})
 def payment_create(body: PaymentCreate):
     g = _q("SELECT user_id FROM guardians WHERE id=%s", (body.guardianId,))
     if not g:
@@ -2160,7 +2191,7 @@ class CenterUpdate(BaseModel):
     recommended: bool | None = Field(None, description="Si se muestra como recomendado.")
 
 
-@app.post("/api/centers", dependencies=[Depends(require_auth)], status_code=201, tags=["Agenda y profesionales"], responses={200: {"model": Centro}})
+@app.post("/api/centers", dependencies=[Depends(_solo_operadores)], status_code=201, tags=["Agenda y profesionales"], responses={200: {"model": Centro}})
 def center_create(body: CenterCreate):
     tier = body.tier if body.tier in TIERS else "publico_minsa"
     cid = str(uuid.uuid4())
@@ -2171,7 +2202,7 @@ def center_create(body: CenterCreate):
     return _one_center(cid)
 
 
-@app.patch("/api/centers/{cid}", dependencies=[Depends(require_auth)], tags=["Agenda y profesionales"], responses={200: {"model": Centro}})
+@app.patch("/api/centers/{cid}", dependencies=[Depends(_solo_operadores)], tags=["Agenda y profesionales"], responses={200: {"model": Centro}})
 def center_update(cid: IdCentro, body: CenterUpdate):
     if not _q("SELECT id FROM hospitals WHERE id=%s", (cid,)):
         raise HTTPException(status_code=404, detail="Center not found.")
@@ -2190,7 +2221,7 @@ def center_update(cid: IdCentro, body: CenterUpdate):
     return _one_center(cid)
 
 
-@app.delete("/api/centers/{cid}", dependencies=[Depends(require_auth)], tags=["Agenda y profesionales"], responses={200: {"model": Borrado}})
+@app.delete("/api/centers/{cid}", dependencies=[Depends(_solo_operadores)], tags=["Agenda y profesionales"], responses={200: {"model": Borrado}})
 def center_delete(cid: IdCentro):
     if not _q("SELECT id FROM hospitals WHERE id=%s", (cid,)):
         raise HTTPException(status_code=404, detail="Center not found.")
@@ -2216,7 +2247,7 @@ def insurances(page: Pagina = 1, page_limit: PorPagina = 100):
     return _envelope([{"id": r["id"], "name": r["name"]} for r in rows], page, page_limit, total)
 
 
-@app.post("/api/insurances", dependencies=[Depends(require_auth)], status_code=201, tags=["Catálogos"], responses={200: {"model": Aseguradora}})
+@app.post("/api/insurances", dependencies=[Depends(_solo_operadores)], status_code=201, tags=["Catálogos"], responses={200: {"model": Aseguradora}})
 def insurance_create(body: NameIn):
     def _ins():
         _exec("INSERT INTO insurance_companies (name, active) VALUES (%s,1)", (body.name.strip(),))
@@ -2225,7 +2256,7 @@ def insurance_create(body: NameIn):
     return {"id": r["id"], "name": r["name"]}
 
 
-@app.patch("/api/insurances/{iid}", dependencies=[Depends(require_auth)], tags=["Catálogos"], responses={200: {"model": Aseguradora}})
+@app.patch("/api/insurances/{iid}", dependencies=[Depends(_solo_operadores)], tags=["Catálogos"], responses={200: {"model": Aseguradora}})
 def insurance_update(iid: IdAseguradora, body: InsuranceUpdate):
     if not _q("SELECT id FROM insurance_companies WHERE id=%s", (iid,)):
         raise HTTPException(status_code=404, detail="Insurance not found.")
@@ -2240,7 +2271,7 @@ def insurance_update(iid: IdAseguradora, body: InsuranceUpdate):
     return {"id": r["id"], "name": r["name"], "active": bool(r["active"])}
 
 
-@app.delete("/api/insurances/{iid}", dependencies=[Depends(require_auth)], tags=["Catálogos"], responses={200: {"model": Borrado}})
+@app.delete("/api/insurances/{iid}", dependencies=[Depends(_solo_operadores)], tags=["Catálogos"], responses={200: {"model": Borrado}})
 def insurance_delete(iid: IdAseguradora):
     if not _q("SELECT id FROM insurance_companies WHERE id=%s", (iid,)):
         raise HTTPException(status_code=404, detail="Insurance not found.")
@@ -2263,7 +2294,7 @@ def specialties_all(page: Pagina = 1, page_limit: PorPagina = 100):
     return _envelope([{"id": r["id"], "name": r["name"]} for r in rows], page, page_limit, total)
 
 
-@app.post("/api/specialties", dependencies=[Depends(require_auth)], status_code=201, tags=["Agenda y profesionales"], responses={200: {"model": Especialidad}})
+@app.post("/api/specialties", dependencies=[Depends(_solo_operadores)], status_code=201, tags=["Agenda y profesionales"], responses={200: {"model": Especialidad}})
 def specialty_create(body: NameIn):
     def _ins():
         _exec("INSERT INTO specialties (name) VALUES (%s)", (body.name.strip(),))
@@ -2273,7 +2304,7 @@ def specialty_create(body: NameIn):
     return {"id": r["id"], "name": r["name"]}
 
 
-@app.patch("/api/specialties/{sid}", dependencies=[Depends(require_auth)], tags=["Agenda y profesionales"], responses={200: {"model": Especialidad}})
+@app.patch("/api/specialties/{sid}", dependencies=[Depends(_solo_operadores)], tags=["Agenda y profesionales"], responses={200: {"model": Especialidad}})
 def specialty_update(sid: IdEspecialidad, body: NameIn):
     if not _q("SELECT id FROM specialties WHERE id=%s", (sid,)):
         raise HTTPException(status_code=404, detail="Specialty not found.")
@@ -2282,7 +2313,7 @@ def specialty_update(sid: IdEspecialidad, body: NameIn):
     return {"id": sid, "name": body.name.strip()}
 
 
-@app.delete("/api/specialties/{sid}", dependencies=[Depends(require_auth)], tags=["Agenda y profesionales"], responses={200: {"model": Borrado}})
+@app.delete("/api/specialties/{sid}", dependencies=[Depends(_solo_operadores)], tags=["Agenda y profesionales"], responses={200: {"model": Borrado}})
 def specialty_delete(sid: IdEspecialidad):
     if not _q("SELECT id FROM specialties WHERE id=%s", (sid,)):
         raise HTTPException(status_code=404, detail="Specialty not found.")
@@ -2292,7 +2323,7 @@ def specialty_delete(sid: IdEspecialidad):
 
 
 # ── Usage / consumos (cached) ────────────────────────────────────────────────
-@app.get("/api/usage/summary", dependencies=[Depends(require_auth)], tags=["Métricas"], responses={200: {"model": UsoResumen}})
+@app.get("/api/usage/summary", dependencies=[Depends(_solo_operadores)], tags=["Métricas"], responses={200: {"model": UsoResumen}})
 def usage_summary():
     def _f():
         r = _q("SELECT COUNT(*) calls, COALESCE(SUM(input_tokens),0) it, COALESCE(SUM(output_tokens),0) ot, "
@@ -2303,7 +2334,7 @@ def usage_summary():
     return _cached("usage:summary", 60, _f)
 
 
-@app.get("/api/usage/by-day", dependencies=[Depends(require_auth)], tags=["Métricas"], responses={200: {"model": list[UsoPorDia]}})
+@app.get("/api/usage/by-day", dependencies=[Depends(_solo_operadores)], tags=["Métricas"], responses={200: {"model": list[UsoPorDia]}})
 def usage_by_day():
     def _f():
         rows = _q("SELECT DATE(created_at) d, COUNT(*) calls, SUM(input_tokens+output_tokens) tokens, "
@@ -2313,7 +2344,7 @@ def usage_by_day():
     return _cached("usage:by-day", 60, _f)
 
 
-@app.get("/api/usage/by-user", dependencies=[Depends(require_auth)], tags=["Métricas"], responses={200: {"model": list[UsoPorUsuario]}})
+@app.get("/api/usage/by-user", dependencies=[Depends(_solo_operadores)], tags=["Métricas"], responses={200: {"model": list[UsoPorUsuario]}})
 def usage_by_user():
     def _f():
         rows = _q("""SELECT g.full_name AS guardian, u.phone_number AS phone, COUNT(*) calls,
@@ -2327,7 +2358,7 @@ def usage_by_user():
 
 
 # ── Statistics (cached) ──────────────────────────────────────────────────────
-@app.get("/api/stats/kpis", dependencies=[Depends(require_auth)], tags=["Métricas"], responses={200: {"model": StatsResumen}})
+@app.get("/api/stats/kpis", dependencies=[Depends(_solo_operadores)], tags=["Métricas"], responses={200: {"model": StatsResumen}})
 def kpis():
     def _f():
         active = _q("SELECT COUNT(*) c FROM users WHERE status='active'")[0]["c"]
@@ -2348,7 +2379,7 @@ def kpis():
 _MONTHS = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"]
 
 
-@app.get("/api/stats/sessions-per-month", dependencies=[Depends(require_auth)], tags=["Métricas"], responses={200: {"model": list[Serie]}})
+@app.get("/api/stats/sessions-per-month", dependencies=[Depends(_solo_operadores)], tags=["Métricas"], responses={200: {"model": list[Serie]}})
 def sessions_per_month():
     def _f():
         rows = _q("SELECT YEAR(opened_at) y, MONTH(opened_at) m, COUNT(*) sessions FROM chat_sessions "
@@ -2360,7 +2391,7 @@ def sessions_per_month():
     return _cached("stats:spm", 60, _f)
 
 
-@app.get("/api/stats/triage", dependencies=[Depends(require_auth)], tags=["Métricas"], responses={200: {"model": list[NivelTriaje]}})
+@app.get("/api/stats/triage", dependencies=[Depends(_solo_operadores)], tags=["Métricas"], responses={200: {"model": list[NivelTriaje]}})
 def stats_triage():
     def _f():
         rows = _q("SELECT cl.name, COUNT(*) value FROM chat_sessions cs JOIN classification cl ON cl.id=cs.classification_id GROUP BY cl.name")
@@ -2371,7 +2402,7 @@ def stats_triage():
     return _cached("stats:triage", 60, _f)
 
 
-@app.get("/api/stats/plans", dependencies=[Depends(require_auth)], tags=["Métricas"], responses={200: {"model": list[StatsPlan]}})
+@app.get("/api/stats/plans", dependencies=[Depends(_solo_operadores)], tags=["Métricas"], responses={200: {"model": list[StatsPlan]}})
 def stats_plans():
     def _f():
         rows = _q("SELECT COALESCE((SELECT p.billing_cycle FROM payments p WHERE p.user_id=u.id AND p.status='confirmed' "
@@ -2384,7 +2415,7 @@ def stats_plans():
     return _cached("stats:plans", 60, _f)
 
 
-@app.get("/api/stats/attention-type", dependencies=[Depends(require_auth)], tags=["Métricas"], responses={200: {"model": list[TipoAtencion]}})
+@app.get("/api/stats/attention-type", dependencies=[Depends(_solo_operadores)], tags=["Métricas"], responses={200: {"model": list[TipoAtencion]}})
 def stats_attention_type():
     def _f():
         pres = _q("SELECT COUNT(*) c FROM chat_sessions WHERE hospital_id IS NOT NULL OR appointment_type='presencial'")[0]["c"]
@@ -2393,7 +2424,7 @@ def stats_attention_type():
     return _cached("stats:att", 60, _f)
 
 
-@app.get("/api/stats/csat", dependencies=[Depends(require_auth)], tags=["Métricas"], responses={200: {"model": list[PuntoCsat]}})
+@app.get("/api/stats/csat", dependencies=[Depends(_solo_operadores)], tags=["Métricas"], responses={200: {"model": list[PuntoCsat]}})
 def stats_csat():
     def _f():
         rows = _q("SELECT YEARWEEK(closed_at) yw, ROUND(AVG(feedback_score)/5*100) csat FROM chat_sessions "
@@ -2715,7 +2746,7 @@ def geo():
     return _cached("geo", 3600, _f)
 
 
-@app.get("/api/stats/summary", dependencies=[Depends(require_auth)], tags=["Métricas"], responses={200: {"model": StatsResumen}})
+@app.get("/api/stats/summary", dependencies=[Depends(_solo_operadores)], tags=["Métricas"], responses={200: {"model": StatsResumen}})
 def stats_summary():
     """North Star del Resumen: cuentas, conversión, revenue, CSAT, uso y seguridad."""
     def _f():
@@ -2772,7 +2803,7 @@ def stats_summary():
     return _cached("stats:summary", 60, _f)
 
 
-@app.get("/api/stats/accounts", dependencies=[Depends(require_auth)], tags=["Métricas"], responses={200: {"model": StatsCuentas}})
+@app.get("/api/stats/accounts", dependencies=[Depends(_solo_operadores)], tags=["Métricas"], responses={200: {"model": StatsCuentas}})
 def stats_accounts():
     """Sección Cuentas: captación mensual y distribución por plan, aseguradora, país y género."""
     def _f():
@@ -2806,7 +2837,7 @@ def stats_accounts():
     return _cached("stats:accounts", 60, _f)
 
 
-@app.get("/api/stats/children", dependencies=[Depends(require_auth)], tags=["Métricas"], responses={200: {"model": StatsHijos}})
+@app.get("/api/stats/children", dependencies=[Depends(_solo_operadores)], tags=["Métricas"], responses={200: {"model": StatsHijos}})
 def stats_children():
     """Sección Niños: total, captación mensual, promedio por cuenta y pirámide de edad."""
     def _f():
@@ -2836,7 +2867,7 @@ def stats_children():
     return _cached("stats:children", 60, _f)
 
 
-@app.get("/api/stats/chats", dependencies=[Depends(require_auth)], tags=["Métricas"], responses={200: {"model": StatsChats}})
+@app.get("/api/stats/chats", dependencies=[Depends(_solo_operadores)], tags=["Métricas"], responses={200: {"model": StatsChats}})
 def stats_chats():
     """Sección Chats: estados, derivaciones (casa/cita/urgencias) y las 3 curvas por mes."""
     def _f():
@@ -2885,7 +2916,7 @@ def stats_chats():
     return _cached("stats:chats", 60, _f)
 
 
-@app.get("/api/stats/performance", dependencies=[Depends(require_auth)], tags=["Métricas"], responses={200: {"model": StatsRendimiento}})
+@app.get("/api/stats/performance", dependencies=[Depends(_solo_operadores)], tags=["Métricas"], responses={200: {"model": StatsRendimiento}})
 def stats_performance():
     """Sección Desempeño. Ojo: `churnRate` es una APROXIMACIÓN por inactividad (ver `note`)."""
     def _f():
@@ -2932,7 +2963,7 @@ def stats_performance():
     return _cached("stats:performance", 60, _f)
 
 
-@app.get("/api/stats/insurance", dependencies=[Depends(require_auth)], tags=["Métricas"], responses={200: {"model": StatsAseguradora}})
+@app.get("/api/stats/insurance", dependencies=[Depends(_solo_operadores)], tags=["Métricas"], responses={200: {"model": StatsAseguradora}})
 def stats_insurance(
     insurance_id: Annotated[int | None, Query(description="Limita el corte a una aseguradora.")] = None,
     date_from: DesdeFecha = None,
@@ -3870,6 +3901,7 @@ def _trim(s: str, n: int) -> str:
                           "description": "La historia clínica en PDF."}})
 def clinical_history(
     pid: IdPaciente,
+    claims: dict = Depends(require_auth),
     download: Annotated[bool, Query(
         description="Siempre devuelve un PDF; esto solo cambia la cabecera "
                     "`Content-Disposition`. `false` (por defecto) lo abre en el navegador; "
@@ -3877,6 +3909,7 @@ def clinical_history(
 ):
     """Historia clínica del paciente en PDF: identificación, antecedentes y el compilado
     de todas sus consultas con conducta, banderas y notas del médico auditor."""
+    _exigir_propio(claims, pid)          # sin esto, cualquiera se bajaba la de cualquier nino
     data = _clinical_history_data(pid)
     pdf = _build_clinical_pdf(data)
     slug = re.sub(r"[^A-Za-z0-9]+", "-", data["patient"]["full_name"]).strip("-").lower()
@@ -3893,7 +3926,7 @@ class DoctorNote(BaseModel):
     reviewed_by: str | None = Field(None, description="UUID del operador que la revisó.")
 
 
-@app.patch("/api/chats/{sid}/note", dependencies=[Depends(require_auth)], tags=["Conversaciones"], responses={200: {"model": NotaChat}})
+@app.patch("/api/chats/{sid}/note", dependencies=[Depends(_solo_operadores)], tags=["Conversaciones"], responses={200: {"model": NotaChat}})
 def chat_note(sid: IdSesion, body: DoctorNote):
     """Comentario del médico auditor sobre una sesión (guarda quién y cuándo revisó)."""
     if not _q("SELECT id FROM chat_sessions WHERE id=%s", (sid,)):
@@ -3936,6 +3969,6 @@ def appointments(page: Pagina = 1, page_limit: PorPagina = 20):
     return _empty_page(page, page_limit)
 
 
-@app.get("/api/logs", dependencies=[Depends(require_auth)], tags=["Operación"], responses={200: {"model": PaginaVacia}})
+@app.get("/api/logs", dependencies=[Depends(_solo_operadores)], tags=["Operación"], responses={200: {"model": PaginaVacia}})
 def logs(page: Pagina = 1, page_limit: PorPagina = 20):
     return _empty_page(page, page_limit)
